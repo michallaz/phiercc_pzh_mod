@@ -1,0 +1,3 @@
+tutaj jest dockerfile dla kontenera ktory zwiera moje wersje pHierCC i scipy, ktory jest tak kompilowany by klastrowanie hierarchinczne single linkage 
+szlo na macierzy z typem danych short (odpowiadajace np.int16) co jest wystarczajace dla cgMLST ktorego max odleglosc nie moze wyniesc wiecej niz 
+liczba alleli w schemacie tj. dla chmlst salmonelli 3200 a int16 akceptuje poprawnie wartosci do bodajce 300 000
