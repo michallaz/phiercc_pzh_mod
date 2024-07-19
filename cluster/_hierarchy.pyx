@@ -904,7 +904,7 @@ def fast_linkage(const double[:] dists, int n, int method):
     return Z.base
 
 
-def nn_chain(const double[:] dists, int n, int method):
+def nn_chain(const short[:] dists, int n, int method):
     """Perform hierarchy clustering using nearest-neighbor chain algorithm.
 
     Parameters
@@ -925,7 +925,7 @@ def nn_chain(const double[:] dists, int n, int method):
     Z_arr = np.empty((n - 1, 4))
     cdef double[:, :] Z = Z_arr
 
-    cdef double[:] D = dists.copy()  # Distances between clusters.
+    cdef short[:] D = dists.copy()  # Distances between clusters.
     cdef int[:] size = np.ones(n, dtype=np.intc)  # Sizes of clusters.
 
     cdef linkage_distance_update new_dist = linkage_methods[method]
@@ -935,8 +935,10 @@ def nn_chain(const double[:] dists, int n, int method):
     cdef int chain_length = 0
 
     cdef int i, k, x, y = 0, nx, ny, ni
-    cdef double dist, current_min
-
+    cdef double dist 
+    cdef double current_min
+    cdef double ala
+    cdef short s
     for k in range(n - 1):
         if chain_length == 0:
             chain_length = 1
@@ -996,11 +998,12 @@ def nn_chain(const double[:] dists, int n, int method):
             ni = size[i]
             if ni == 0 or i == y:
                 continue
-
-            D[condensed_index(n, i, y)] = new_dist(
+            ala = new_dist(
                 D[condensed_index(n, i, x)],
                 D[condensed_index(n, i, y)],
                 current_min, nx, ny, ni)
+            s = <short>ala
+            D[condensed_index(n, i, y)] = s
 
     # Sort Z by cluster distances.
     order = np.argsort(Z_arr[:, 2], kind='mergesort')

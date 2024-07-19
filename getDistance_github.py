@@ -2,6 +2,7 @@ import numpy as np, numba as nb, os
 from tempfile import NamedTemporaryFile
 import SharedArray as sa
 from scipy.special import binom
+import logging
 
 def getDistance(data, func_name, pool, start=0, allowed_missing=0.0, depth=0):
     # przepisanie funkcji na RAM z pominieciem shared array-a
@@ -169,7 +170,7 @@ def Getsquareform(data, func_name, pool, start=0, allowed_missing=0.0):
 
         dist_buf = '{0}.dist.sa'.format(prefix)
         wymiar = int(mat.shape[0] * (mat.shape[0] - 1) / 2)
-        dist = sa.create(dist_buf, shape=wymiar, dtype=np.int64)
+        dist = sa.create(dist_buf, shape=wymiar, dtype=np.int16)
         ## wypelnij obiekt zerami
         dist[:] = 0
 
@@ -226,6 +227,9 @@ def __parallel_squareform(mat_buf, func, dist_buf, n, pool, start=0, allowed_mis
                     indices.append([s,e])
                     s = e
 
+    with open('macierz_indeksy.txt', 'w') as f:
+        for s,e in indices:
+            f.write(f'Analizuje przypadki od {s} do {e}\n')
     #for _ in np.arange(n_pool) :
     #    e = np.sqrt(s * s + tot_cmp)
     #    indices.append([s, e])
@@ -252,7 +256,7 @@ def __dist_wrapper_squareform(data) :
     mat = sa.attach(mat_buf)
     dist = sa.attach(dist_buf)
     if e > s :
-        # jako ze ide po wierszach macierzy profili to wektor squareform bedzie zawsze liczony od "s" wiersza i "0" kolumny
+        # jako ze ide po wierszach macierzy profili to wektor squareform bedzie zawsze liczony od "s" wiersza i s+1 kolumny
         # do "e -1" wiersza i ostatniej kolumny ktora ma rozmiar (n-1) gdzie n to rozmia macierzy
         # jako ze mmay policzyc wycinek wetora z dystanami
 
@@ -266,7 +270,12 @@ def __dist_wrapper_squareform(data) :
 
         dlugosc_wektora = int(binom(n, 2) - binom(n - (e-1), 2) + (n - (e -1) - 1) - (binom(n, 2) - binom(n - s, 2) + (s + 1 - s - 1)))
 
+        #pusty przelot dla numby co sugeruje chatgpt
+        sample_matrix = np.random.randint(0, 2, size=(3, 10))
+        func(sample_matrix, 0, 3, int(3 * (3 - 1) / 2))
+
         d = func(mat[:, 1:], s, e, dlugosc_wektora, allowed_missing)
+
         #print(f'Dla indeksow {s} i {e} musze policzyc wektor o dlugosci {dlugosc_wektora}')
         dist[pozycja_wektor_start:pozycja_wektor_end] = d
     del mat, dist
@@ -292,7 +301,7 @@ def dual_dist_squareform(mat, s, e, dlugosc_wektora, allowed_missing=0.05):
     # pewnie dlatego jako robie obliczenia to zajmuje tyle pamieci na tym etapie ile mam w docelowym wektorze
 
 
-    dist = np.zeros(dlugosc_wektora, dtype=np.int64)
+    dist = np.zeros(dlugosc_wektora, dtype=np.int16)
 
 
     n_loci = mat.shape[1]
@@ -341,34 +350,97 @@ def dual_dist_squareform_lessloop(mat, s, e, dlugosc_wektora, allowed_missing=0.
     """
 
 
-    dist = np.zeros(dlugosc_wektora, dtype=np.int64)
-
+    dist = np.zeros(dlugosc_wektora, dtype=np.int16)
+    n_loci = len(mat[0])
 
     element = 0
     for i in range(s, e) :
         wektor_x = mat[i]
-        n_loci = len(wektor_x)
         # ql ile mamy nie zerowych alleli w pierwszym analizaowanym ST
         ql = np.sum(wektor_x > 0)
         for j in range(i+1, mat.shape[0]) :
+            # w oryginalnym kodzie zmienne ad i al inicjowane sa z malymi wartosciami co powoduje
+            # roznice przy zaookragleniach ...
+            rl, ad, al = 0., 1e-4, 1e-4
             wektor_y = mat[j]
             # rl ile mamy nie zerowych alleli w drugim analizowanym ST
             rl = np.sum(wektor_y > 0)
             # ile mamy WSPOLNYCH niezerowych alleli w obu ST
-            indeksy = np.where((wektor_x > 0) & (wektor_y > 0))
-            al = len(indeksy[0])
-            # ile mamy NIEZEROWYCH alleli ktore przyjmuja IDENTYCZNA wartosc
-            ad = np.sum(~np.equal(wektor_x[indeksy[0]], wektor_y[indeksy[0]]))
+            common_non_zero = (wektor_x > 0) & (wektor_y > 0)
+            al += np.sum(common_non_zero)
+            # ile mamy NIEZEROWYCH alleli ktore przyjmuja ROZNA wartosc
+            ad += np.sum(wektor_x[common_non_zero] != wektor_y[common_non_zero])
             # Wieksza z wartosci ql i rl pomniejszona o dopuszczalna liczbe zerowych alleli
             ll = max(ql, rl) - allowed_missing * n_loci
+            ll2 = ql - allowed_missing * n_loci
+
+            if ll2 > al:
+                ad += ll2 - al
+                al = ll2
+
+            # Tutaj zapisany bylby drugi z dystansow nie uzywany do lastrowania
 
             if ll > al:
                 ad += ll - al
                 al = ll
-            # oryginalna definicja dystansu
+            # oryginalna definicja dystansu uzywana do klastrowania
             dist[element] = np.int16(ad / al * n_loci + 0.5)
             element += 1
 
 
+    return dist
+
+
+@nb.jit(nopython=True)
+def dual_dist_squareform_lessloop_optimized(mat, s, e, dlugosc_wektora, allowed_missing=0.05):
+    """
+    Modyfikacja funkcji dual_dist_squareform, wyjmuje czesc petli z obliczen
+    :param mat:
+    :param s:
+    :param e:
+    :param dlugosc_wektora:
+    :param allowed_missing:
+    :return:
+    """
+
+
+    dist = []
+    n_loci = len(mat[0])
+
+    element = 0
+    for i in range(s, e) :
+        wektor_x = mat[i]
+        # ql ile mamy nie zerowych alleli w pierwszym analizaowanym ST
+        ql = np.sum(wektor_x > 0)
+        for j in range(i+1, mat.shape[0]) :
+            # w oryginalnym kodzie zmienne ad i al inicjowane sa z malymi wartosciami co powoduje
+            # roznice przy zaookragleniach ...
+            rl, ad, al = 0., 1e-4, 1e-4
+            wektor_y = mat[j]
+            # rl ile mamy nie zerowych alleli w drugim analizowanym ST
+            rl = np.sum(wektor_y > 0)
+            # ile mamy WSPOLNYCH niezerowych alleli w obu ST
+            common_non_zero = (wektor_x > 0) & (wektor_y > 0)
+            al += np.sum(common_non_zero)
+            # ile mamy NIEZEROWYCH alleli ktore przyjmuja ROZNA wartosc
+            ad += np.sum(wektor_x[common_non_zero] != wektor_y[common_non_zero])
+            # Wieksza z wartosci ql i rl pomniejszona o dopuszczalna liczbe zerowych alleli
+            ll = max(ql, rl) - allowed_missing * n_loci
+            ll2 = ql - allowed_missing * n_loci
+
+            if ll2 > al:
+                ad += ll2 - al
+                al = ll2
+
+            # Tutaj zapisany bylby drugi z dystansow nie uzywany do lastrowania
+
+            if ll > al:
+                ad += ll - al
+                al = ll
+            # oryginalna definicja dystansu uzywana do klastrowania
+            dist.append(np.int16(ad / al * n_loci + 0.5))
+
+
+    dist = np.array(dist, dtype = np.int16)
     return dist
 

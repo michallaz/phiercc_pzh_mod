@@ -87,6 +87,8 @@ def phierCC(profile, output, profile_dist, new_profile_mat, n_proc, allowed_miss
         'Loaded in allelic profiles with dimension: {0} and {1}. The first column is assumed to be type id.'.format(
             *mat.shape))
     logging.info('Start HierCC assignments')
+
+    # Sorting profile matrix to push down ST with high number of missing alleles (with 0)
     absence = np.sum(mat <= 0, 1)
     mat[:] = mat[np.argsort(absence, kind='mergesort')]
     typed = {}
@@ -145,7 +147,9 @@ def phierCC(profile, output, profile_dist, new_profile_mat, n_proc, allowed_miss
         #res = np.concatenate([res, to_res])
     else:
         logging.info('Calculate distance matrix')
-        dist = Getsquareform(mat, 'dual_dist_squareform_lessloop', pool, start, allowed_missing)
+        # o dziwo oryginalna funkcja dual_dist_squareform jest szybsza
+        # niz jej implementacja w numpy wiec uzywamy jej ale liczymy dalej przy jej uzyciu squareform'a
+        dist = Getsquareform(mat, 'dual_dist_squareform_lessloop_optimized', pool, start, allowed_missing)
 
 
         #zapisujemy surowy output dist tdo pliku
