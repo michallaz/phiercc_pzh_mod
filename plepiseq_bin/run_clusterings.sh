@@ -7,7 +7,7 @@
 ### --image image name with tag build using provided Dockerfile
 ### --output_dir path to the top level directory where intermediate calculations are carried out
 ### if direcotry does not exist it will be created
-### if directory exists Salmonella/ Campylobacter/ and Ecoli/ subdirecories will be REMOVED
+### if directory exists Salmonella/ Campylobacter/ and Escherichia subdirecories will be REMOVED
 ### Sctipt MUST be executed from main directory of the cloned repo, to commit all the changes
 ### Script will crash if machine has less than 600 Gb of RAM 
 
@@ -90,16 +90,16 @@ output=$(realpath ${output_dir})
 if [ ! -d "${output}" ]; then
     echo "Directory ${output} does not exist. Creating it..."
     mkdir -p "${output}/Salmonella"
-    mkdir -p "${output}/Ecoli"
+    mkdir -p "${output}/Escherichia"
     mkdir -p "${output}/Campylobacter"
 else
     echo "Directory ${output} exists. Removing data from selected subidrecotries..."
     rm -rf ${output}/Salmonella
-    rm -rf ${output}/Ecoli
+    rm -rf ${output}/Escherichia
     rm -rf ${output}/Campylobacter
 
     mkdir -p "${output}/Salmonella"
-    mkdir -p "${output}/Ecoli"
+    mkdir -p "${output}/Escherichia"
     mkdir -p "${output}/Campylobacter"
 fi
 
@@ -128,11 +128,11 @@ fi
 
 # download profiles
 wget -O "${output}/Salmonella/profiles.list.gz"  "https://enterobase.warwick.ac.uk//schemes/Salmonella.cgMLSTv2/profiles.list.gz"
-wget -O "${output}/Ecoli/profiles.list.gz" "https://enterobase.warwick.ac.uk//schemes/Escherichia.cgMLSTv1/profiles.list.gz"
+wget -O "${output}/Escherichia/profiles.list.gz" "https://enterobase.warwick.ac.uk//schemes/Escherichia.cgMLSTv1/profiles.list.gz"
 python3 plepiseq_bin/download_profile_Campylo.py
 mv profiles.list  "${output}/Campylobacter/"
 
-# calculate profiles /For salmonella even when using 250 cores  it will take ~16h)
+echo "Running clustering for Campylobacter ~ 11 min"
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
        --user $(id -u):$(id -g) \
@@ -144,3 +144,58 @@ docker run --rm \
        ${image_name} --profile "/dane/profiles.list" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
 
 echo "Finished calculations for Campylobacter"
+
+
+
+echo "Running clustering for Ecoli ~ 11 min"
+docker run --rm \
+       --volume "${output}/Escherichia/:/dane:rw" \
+       --user $(id -u):$(id -g) \
+       ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} --clustering_method single
+
+docker run --rm \
+       --volume "${output}/Escherichia/:/dane:rw" \
+       --user $(id -u):$(id -g) \
+       ${image_name} --profile "/dane/profiles.list.gz" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
+
+echo "Finished calculations for Ecoli"
+
+echo "Running clustering for Salmonella ~8h "
+# calculate profiles /For salmonella even when using 250 cores  it will take ~16h)
+docker run --rm \
+       --volume "${output}/Salmonella/:/dane:rw" \
+       --user $(id -u):$(id -g) \
+       ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} --clustering_method single
+
+docker run --rm \
+       --volume "${output}/Salmonella/:/dane:rw" \
+       --user $(id -u):$(id -g) \
+       ${image_name} --profile "/dane/profiles.list.gz" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
+
+echo "Finished calculations for Salmonella"
+
+# moving results to plepiseq_data
+# updating repo
+
+if [ ! -d "plepiseq_data/Campylobacter" ]; then
+	mkdir -p "plepiseq_data/Campylobacter"
+fi
+cp  ${output}/Campylobacter/*HierCC* plepiseq_data/Campylobacter
+
+
+if [ ! -d "plepiseq_data/Salmonella" ]; then
+        mkdir -p "plepiseq_data/Salmonella"
+fi
+cp  ${output}/Salmonella/*HierCC* plepiseq_data/Salmonella
+
+if [ ! -d "plepiseq_data/Escherichia" ]; then
+        mkdir -p "plepiseq_data/Escherichia"
+fi
+cp  ${output}/Escherichia/*HierCC* plepiseq_data/
+
+# Update timestamp
+date '+%D' > "plepiseq_data/timestamp"
+
+git add plepiseq_data/*
+git commit -m "Update on `date +%D`"
+git push
