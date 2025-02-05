@@ -132,11 +132,11 @@ mv profiles.list  "${output}/Campylobacter/"
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
        --user $(id -u):$(id -g) \
-       ${image_name} --profile /dane/profiles.list -n ${cpus} --clustering_method single
+       ${image_name} --profile "/dane/profiles.list" -n ${cpus} --clustering_method single
 
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
        --user $(id -u):$(id -g) \
-       ${image_name} --profile /dane/profiles.list --profile_distance0 /dane/dist0.npy --profile_distance1 /dane/dist1.npy -n 1 --clustering_method complete
+       ${image_name} --profile "/dane/profiles.list" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
 
 echo "Finished calculations for Campylobacter"
