@@ -147,7 +147,7 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
         logging.info('Calculate distance matrix 0')
         pool = Pool(n_proc)
         # dual_dist_squareform_lessloop_optimized, dual_dist_squareform_lessloop lub dual_dist_squareform
-        dist = Getsquareform(mat, 'dual_dist_squareform', pool, start, allowed_missing)
+        dist = Getsquareform(mat, 'dual_dist_squareform', pool, output_dir, start, allowed_missing)
         logging.info(f'Saving distance0 matrix 0 to {numpy_dist0_out}')
         #zapisujemy surowy output dist tdo pliku
         np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
@@ -182,7 +182,7 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     else:
         pool = Pool(n_proc)
         logging.info('Calculate distance matrix 1')
-        dist = getDistance(mat, 'dual_dist', pool, start, allowed_missing, depth=1)
+        dist = getDistance(mat, 'dual_dist', pool, output_dir, start, allowed_missing, depth=1)
         # zapisujemy surowy output dist tdo pliku
         logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
         np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)

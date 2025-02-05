@@ -4,14 +4,14 @@ import SharedArray as sa
 from scipy.special import binom
 import logging
 
-def getDistance(data, func_name, pool, start=0, allowed_missing=0.0, depth=0):
+def getDistance(data, func_name, pool, output_dir, start=0, allowed_missing=0.0, depth=0):
     """
     This function creates a file that stores a distance matrix. For samples and runs a __parallel_dist function
     it is call by the pHierCC.py script
     """
 
     with NamedTemporaryFile(dir='.', prefix='HCC_') as file:
-        prefix = 'file://{0}'.format(file.name)
+        prefix = f'file://{output_dir}/{file.name}'
         func = eval(func_name)
         mat_buf = '{0}.mat.sa'.format(prefix)
         mat = sa.create(mat_buf, shape=data.shape, dtype=data.dtype)
@@ -143,11 +143,11 @@ def dual_dist_single(mat, new_mat, s, e, allowed_missing=0.05):
             dist[0, j, 0] = int(ad/al * n_loci + 0.5)
     return dist
 
-def Getsquareform(data, func_name, pool, start=0, allowed_missing=0.0):
+def Getsquareform(data, func_name, pool, output_dir, start=0, allowed_missing=0.0):
     # przepisanie  oryginalnej funkcji getDistance
     # aby od razu zwracala squareform, ktore mozna wykorzystac do klastrowania
     with NamedTemporaryFile(dir='.', prefix='HCC_') as file :
-        prefix = 'file://{0}'.format(file.name)
+        prefix = f'file://{output_dir}/{file.name}'
         func = eval(func_name)
         # Stworz obiekt mat bedacy macierza zawierajaca informacje o wszystkich profilach
         # Nie jest to obiekt bardzo duzy ale bedzie replikowany kilkadziesiat razy wiec musi pozostac
