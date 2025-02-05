@@ -10,8 +10,9 @@ RUN apt install libopenblas-dev gfortran libboost-all-dev -y
 
 # sciaganie scipy i podmienianie plikow z modulu cluster
 WORKDIR /opt
-RUN git clone https://github.com/scipy/scipy.git
+RUN git clone https://github.com/scipy/scipy.git --tags
 WORKDIR /opt/scipy
+RUN git checkout 476428deacecf289cc1b39da8b1edb9d81e2facc
 COPY cluster/hierarchy.py /opt/scipy/scipy/cluster/hierarchy.py
 COPY cluster/_hierarchy.pyx /opt/scipy/scipy/cluster/_hierarchy.pyx
 
@@ -29,6 +30,5 @@ RUN pip install pandas numba Click
 RUN pip install --no-deps pHierCC
 COPY getDistance_github.py /usr/local/lib/python3.11/site-packages/pHierCC/getDistance.py
 COPY pHierCC_github.py /usr/local/lib/python3.11/site-packages/pHierCC/pHierCC.py
-
-WORKDIR /
+ENTRYPOINT ["pHierCC"]
 

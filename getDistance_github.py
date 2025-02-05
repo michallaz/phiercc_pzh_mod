@@ -5,32 +5,25 @@ from scipy.special import binom
 import logging
 
 def getDistance(data, func_name, pool, start=0, allowed_missing=0.0, depth=0):
-    # przepisanie funkcji na RAM z pominieciem shared array-a
-    # depth to wartosc 0 lub 1 i odpowiada 3-ciemu wymiarowi oryginalnej macierzy
-    with NamedTemporaryFile(dir='.', prefix='HCC_') as file :
+    """
+    This function creates a file that stores a distance matrix. For samples and runs a __parallel_dist function
+    it is call by the pHierCC.py script
+    """
+
+    with NamedTemporaryFile(dir='.', prefix='HCC_') as file:
         prefix = 'file://{0}'.format(file.name)
         func = eval(func_name)
         mat_buf = '{0}.mat.sa'.format(prefix)
-        mat = sa.create(mat_buf, shape = data.shape, dtype = data.dtype)
+        mat = sa.create(mat_buf, shape=data.shape, dtype=data.dtype)
         mat[:] = data[:]
         dist_buf = '{0}.dist.sa'.format(prefix)
-        #dist = sa.create(dist_buf, shape = [mat.shape[0] - start, mat.shape[0], 2], dtype = np.int32)
-        # macierz bedzie "x na x na 1" a nie "x na x na 2"
-        # ale liczenie bedziemy musieli zrobic dwa razy kosztem 2 mniejszego uzcia pamieci
-        # unikniemy tez koniecznosci robienia tego po dysku
         dist = sa.create(dist_buf, shape=[mat.shape[0] - start, mat.shape[0], 1], dtype=np.int16)
         dist[:] = 0
-        #dist = np.zeros(shape = (mat.shape[0] - start, mat.shape[0], 1), dtype = np.int16)
-
         __parallel_dist(mat_buf, func, dist_buf, mat.shape, pool, start, allowed_missing, depth)
-
         # usun pliki posrednie pozostanie tylko plik dist zapisywany w glowny mskrypcie
         sa.delete(mat_buf)
         sa.delete(dist_buf)
-        #os.unlink(dist_buf[7:])
     return dist
-
-
 
 def __parallel_dist(mat_buf, func, dist_buf, mat_shape, pool, start=0, allowed_missing=0.0, depth=0) :
     n_pool = len(pool._pool)
@@ -160,7 +153,7 @@ def Getsquareform(data, func_name, pool, start=0, allowed_missing=0.0):
         # Nie jest to obiekt bardzo duzy ale bedzie replikowany kilkadziesiat razy wiec musi pozostac
         # w pliku
         mat_buf = '{0}.mat.sa'.format(prefix)
-        mat = sa.create(mat_buf, shape = data.shape, dtype = data.dtype)
+        mat = sa.create(mat_buf, shape=data.shape, dtype=data.dtype)
         ## wypelnij obiek mat danymi
         mat[:] = data[:]
 
@@ -175,13 +168,14 @@ def Getsquareform(data, func_name, pool, start=0, allowed_missing=0.0):
         dist[:] = 0
 
         # uzupelnij obiekt dist_buf odleglosciami
-        __parallel_squareform(mat_buf = mat_buf,
-                              func = func,
-                              dist_buf = dist_buf,
-                              n = mat.shape[0],
-                              pool = pool,
-                              start = start,
-                              allowed_missing= allowed_missing)
+        # kod ponizej jest tylko czytelniejsza reimplementacja oryginalnej funkcji
+        __parallel_squareform(mat_buf=mat_buf,
+                              func=func,
+                              dist_buf=dist_buf,
+                              n=mat.shape[0],
+                              pool=pool,
+                              start=start,
+                              allowed_missing=allowed_missing)
 
         # usun sharedarray
         sa.delete(mat_buf)
@@ -212,6 +206,7 @@ def __parallel_squareform(mat_buf, func, dist_buf, n, pool, start=0, allowed_mis
     # np [4,10] oznaczalovy ze liczymy odleglosci miedzy elementami od 4 do 10 a WSZYSTKIMI pozostalymi indeksami w macierzy
 
     s, indices = start, []
+    # Podziel caly wektor dla danych na rowne odcinki
     wymiar_oczekiwany = int(n * (n - 1) / 2) / int(n_pool)
 
     # zrobic warunek by indeksy nie wyskoczyy poza macierz
@@ -219,28 +214,27 @@ def __parallel_squareform(mat_buf, func, dist_buf, n, pool, start=0, allowed_mis
 
     while len(indices) < n_pool:
         if len(indices) == (n_pool - 1):
-            indices.append([s,n])
+            # assume that indeces end at n
+            indices.append([s, n])
         else:
-            for e in range((s + 1),n):
+            for e in range((s + 1), n):
+                # policz ile wynosi wektor dystansow jaki trzeba policzyc dla macierzy miedzy indeksem s a e
                 dlugosc_tymczasowa = int(binom(n, 2) - binom(n - (e-1), 2) + (n - (e -1) - 1) - (binom(n, 2) - binom(n - s, 2) + (s + 1 - s - 1)))
+                # w koncu znajdujemy taki e (dla ustalonego s) ktore jest dluzsze niz wektor oczekiwany,
+                # zapisz te indeksy i zacznij ponownie dla nowego s
                 if dlugosc_tymczasowa > wymiar_oczekiwany:
-                    indices.append([s,e])
+                    indices.append([s, e])
                     s = e
-
+    # profilaktycznie zapisz odcinki do pliku
     with open('macierz_indeksy.txt', 'w') as f:
         for s,e in indices:
             f.write(f'Analizuje przypadki od {s} do {e}\n')
-    #for _ in np.arange(n_pool) :
-    #    e = np.sqrt(s * s + tot_cmp)
-    #    indices.append([s, e])
-    #    s = e
-    # po skonczonych obliczeniach zaookraglamy w gore indeksy i upewanimy sie ze sa int-ami
-    #indices = (np.array(indices)+0.5).astype(int)
 
     # wywolanie funkcji z func z odpowiednimi parametrami
     # iterujemy po indeksach i podajemy "DUZEJ" funkcji poza wartoscami "stalymi" jak gdzie sa pliki z amcierz itd
     # wartosci s i e czyli pierwszy i ostatni element z macierzy mat dla ktorych mamy policzyc odleglosc
     # do wszystkich pozostalych elementow macierzy mat
+    # macierz operuje
     for _ in pool.imap_unordered(__dist_wrapper_squareform, [[func, mat_buf, dist_buf, s, e, start, allowed_missing, n] for s, e in indices ]) :
         pass
     return
@@ -265,45 +259,39 @@ def __dist_wrapper_squareform(data) :
 
 
         pozycja_wektor_start = int(binom(n, 2) - binom(n - s, 2) + (s + 1 - s - 1))
-
         pozycja_wektor_end = int(binom(n, 2) - binom(n - (e - 1), 2) + (n - (e - 1) - 1))
-
         dlugosc_wektora = int(binom(n, 2) - binom(n - (e-1), 2) + (n - (e -1) - 1) - (binom(n, 2) - binom(n - s, 2) + (s + 1 - s - 1)))
 
-        #pusty przelot dla numby co sugeruje chatgpt
+        # pusty przelot dla numby co sugeruje chatgpt
         sample_matrix = np.random.randint(0, 2, size=(3, 10))
         func(sample_matrix, 0, 3, int(3 * (3 - 1) / 2))
 
+        # wywolaj obliczenia funkcja, liczy dystans dla macierzy od indeksow s do e
+        # ktory nastepnie wklejamy w duzy wektor
         d = func(mat[:, 1:], s, e, dlugosc_wektora, allowed_missing)
 
-        #print(f'Dla indeksow {s} i {e} musze policzyc wektor o dlugosci {dlugosc_wektora}')
         dist[pozycja_wektor_start:pozycja_wektor_end] = d
     del mat, dist
 
 @nb.jit(nopython=True)
 def dual_dist_squareform(mat, s, e, dlugosc_wektora, allowed_missing=0.05):
-    # da funkcja produke macierz dystansu od razu w postaci
-    # squareform co oszczedza nam polowe RAM-u
-    # ale tylko do robienia klastrowania , dla tej macierzy [:,:,1] zostaje "poprzedni" kod
+    #  da funkcja produke macierz dystansu od razu w postaci
+    #  squareform co oszczedza nam polowe RAM-u
+    #  ale tylko do robienia klastrowania , dla tej macierzy [:,:,1] zostaje "poprzedni" kod
 
-    # pozycja w wektorzez V dla dystansu z macierzy kwadratowej o wymiarze n (liczac rozmiar od 0 jako macierz 1x1)
-    # pozycja miedzy elementami i-wiersz i j-ta kolumna (tez indeksowana od 0)
-    # wyraza wzor
-    # binom(n, 2) - binom(n-i, 2) + (j - i -1)
-    # tez indeksowany jak python chce od 0
-    # np dla n = 10 (macierz 10 na 10) tutaj indeksacja jest od 1
-    # i = 0 (pierwszy wiersz) indeksacja od 0
-    # j = 1 (druga kolumna) da wartosc
-    # 0 (pierwszy element wktora) tez indeksowany od 0
-    # dla i=1 j = 2 mamy 9 element wektora (czyli 10 liczac od 1)
+    #  pozycja w wektorzez V dla dystansu z macierzy kwadratowej o wymiarze n (liczac rozmiar od 0 jako macierz 1x1)
+    #  pozycja miedzy elementami i-wiersz i j-ta kolumna (tez indeksowana od 0)
+    #  wyraza wzor
+    #  binom(n, 2) - binom(n-i, 2) + (j - i -1)
+    #  tez indeksowany jak python chce od 0
+    #  np dla n = 10 (macierz 10 na 10) tutaj indeksacja jest od 1
+    #  i = 0 (pierwszy wiersz) indeksacja od 0
+    #  j = 1 (druga kolumna) da wartosc
+    #  0 (pierwszy element wktora) tez indeksowany od 0
+    #  dla i=1 j = 2 mamy 9 element wektora (czyli 10 liczac od 1)
 
-    # tworze wektor ktory "przekaze" do glownego wektora
-    # pewnie dlatego jako robie obliczenia to zajmuje tyle pamieci na tym etapie ile mam w docelowym wektorze
-
-
+    #  tworze wektor ktory "przekaze" do glownego wektora
     dist = np.zeros(dlugosc_wektora, dtype=np.int16)
-
-
     n_loci = mat.shape[1]
     element = 0
     for i in range(s, e) :
@@ -321,20 +309,14 @@ def dual_dist_squareform(mat, s, e, dlugosc_wektora, allowed_missing=0.05):
                             ad += 1
             ll = max(ql, rl) - allowed_missing * n_loci
             ll2 = ql - allowed_missing * n_loci
-
-
-
+            # we use this function only for "first" distnace matrix, ll2 is not used during its calculations
             if ll > al :
                 ad += ll - al
                 al = ll
-
             # dist[i - s, j] = int(ad / al * n_loci + 0.5)
             dist[element] = int(ad/al * n_loci + 0.5)
-            element+=1
-
+            element += 1
     return dist
-
-
 
 
 @nb.jit(nopython=True)
@@ -374,9 +356,9 @@ def dual_dist_squareform_lessloop(mat, s, e, dlugosc_wektora, allowed_missing=0.
             ll = max(ql, rl) - allowed_missing * n_loci
             ll2 = ql - allowed_missing * n_loci
 
-            if ll2 > al:
-                ad += ll2 - al
-                al = ll2
+            #if ll2 > al:
+            #    ad += ll2 - al
+            #    al = ll2
 
             # Tutaj zapisany bylby drugi z dystansow nie uzywany do lastrowania
 
@@ -428,9 +410,9 @@ def dual_dist_squareform_lessloop_optimized(mat, s, e, dlugosc_wektora, allowed_
             ll = max(ql, rl) - allowed_missing * n_loci
             ll2 = ql - allowed_missing * n_loci
 
-            if ll2 > al:
-                ad += ll2 - al
-                al = ll2
+            #if ll2 > al:
+            #    ad += ll2 - al
+            #    al = ll2
 
             # Tutaj zapisany bylby drugi z dystansow nie uzywany do lastrowania
 
