@@ -93,10 +93,14 @@ if [ ! -d "${output}" ]; then
     mkdir -p "${output}/Ecoli"
     mkdir -p "${output}/Campylobacter"
 else
-    echo "Directory ${output} exists. Removing selecting subidrecotries..."
+    echo "Directory ${output} exists. Removing data from selected subidrecotries..."
     rm -rf ${output}/Salmonella
     rm -rf ${output}/Ecoli
     rm -rf ${output}/Campylobacter
+
+    mkdir -p "${output}/Salmonella"
+    mkdir -p "${output}/Ecoli"
+    mkdir -p "${output}/Campylobacter"
 fi
 
 ### Check if the user-provided path has write permissions
