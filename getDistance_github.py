@@ -175,6 +175,7 @@ def Getsquareform(data, func_name, pool, output_dir, start=0, allowed_missing=0.
                               n=mat.shape[0],
                               pool=pool,
                               start=start,
+                              output_dir=output_dir,
                               allowed_missing=allowed_missing)
 
         # usun sharedarray
@@ -183,7 +184,7 @@ def Getsquareform(data, func_name, pool, output_dir, start=0, allowed_missing=0.
 
     return dist
 
-def __parallel_squareform(mat_buf, func, dist_buf, n, pool, start=0, allowed_missing=0.05) :
+def __parallel_squareform(mat_buf, func, dist_buf, n, pool, output_dir, start=0, allowed_missing=0.05) :
     """
     Funkcja jest wrapperem ktory wywoluje worker-ow (tyle ile wynosi pool)
     w celu uzupelnienia wektora zapisanego w dist_buf
@@ -226,7 +227,7 @@ def __parallel_squareform(mat_buf, func, dist_buf, n, pool, start=0, allowed_mis
                     indices.append([s, e])
                     s = e
     # profilaktycznie zapisz odcinki do pliku
-    with open('macierz_indeksy.txt', 'w') as f:
+    with open(f'{output_dir}/macierz_indeksy.txt', 'w') as f:
         for s,e in indices:
             f.write(f'Analizuje przypadki od {s} do {e}\n')
 
