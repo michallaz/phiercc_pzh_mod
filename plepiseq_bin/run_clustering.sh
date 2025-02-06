@@ -10,7 +10,7 @@
 ### if directory exists Salmonella/ Campylobacter/ and Escherichia subdirecories will be REMOVED
 ### Sctipt MUST be executed from main directory of the cloned repo, to commit all the changes
 ### Script will crash if machine has less than 600 Gb of RAM 
-
+### ./plepiseq_bin/run_clustering.sh --output_dir /mnt/raid/michall/pHierCC --image_name "phiercc_custom:2.0" --cpus 250
 output_dir="" 
 image_name=""
 cpus=1
@@ -132,7 +132,7 @@ wget -O "${output}/Escherichia/profiles.list.gz" "https://enterobase.warwick.ac.
 python3 plepiseq_bin/download_profile_Campylo.py
 mv profiles.list  "${output}/Campylobacter/"
 
-echo "Running clustering for Campylobacter ~ 11 min"
+echo "Running clustering for Campylobacter ~15 min on 250 CPUs"
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
        --user $(id -u):$(id -g) \
@@ -146,8 +146,7 @@ docker run --rm \
 echo "Finished calculations for Campylobacter"
 
 
-
-echo "Running clustering for Ecoli ~ 11 min"
+echo "Running clustering for Ecoli ~6 h on 250 CPUs"
 docker run --rm \
        --volume "${output}/Escherichia/:/dane:rw" \
        --user $(id -u):$(id -g) \
@@ -160,7 +159,7 @@ docker run --rm \
 
 echo "Finished calculations for Ecoli"
 
-echo "Running clustering for Salmonella ~8h "
+echo "Running clustering for Salmonella ~15 h on 250 CPUs"
 # calculate profiles /For salmonella even when using 250 cores  it will take ~16h)
 docker run --rm \
        --volume "${output}/Salmonella/:/dane:rw" \
@@ -191,11 +190,12 @@ cp  ${output}/Salmonella/*HierCC* plepiseq_data/Salmonella
 if [ ! -d "plepiseq_data/Escherichia" ]; then
         mkdir -p "plepiseq_data/Escherichia"
 fi
-cp  ${output}/Escherichia/*HierCC* plepiseq_data/
+cp  ${output}/Escherichia/*HierCC* plepiseq_data/Escherichia
 
 # Update timestamp
 date '+%D' > "plepiseq_data/timestamp"
 
+# Commiting new data to repo
 git add plepiseq_data/*
 git commit -m "Update on `date +%D`"
 git push
