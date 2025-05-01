@@ -18,12 +18,13 @@ profile = requests.get(scheme_link + '/profiles_csv')
 with open('profiles.list','w') as f:
     i = 0
     for line in profile.iter_lines():
+
         # Last column is LINcode that should not be included
         if i == 0:
             # Firs line (header) has an additional element
             line = list(map(lambda x: x.decode('utf-8', errors='replace'), line.split()))[:-1]
         else:
-            line = list(map(lambda x: x.decode('utf-8', errors='replace'), line.split()))
+            line = list(map(lambda x: x.decode('utf-8', errors='replace'), line.split()))[:-1]
         # replace "Ns" with 0
         line = ["0" if x == "N" else x for x in line]
         line = "\t".join(line)
