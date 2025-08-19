@@ -132,6 +132,10 @@ wget -O "${output}/Escherichia/profiles.list.gz" "https://enterobase.warwick.ac.
 python3 plepiseq_bin/download_profile_Campylo.py
 mv profiles.list  "${output}/Campylobacter/"
 
+# Update timestamp
+# timestamp should be the day when profiles were downoloaded
+date '+%D' > "plepiseq_data/timestamp"
+
 echo "Running clustering for Campylobacter ~15 min on 250 CPUs"
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
@@ -191,9 +195,6 @@ if [ ! -d "plepiseq_data/Escherichia" ]; then
         mkdir -p "plepiseq_data/Escherichia"
 fi
 cp  ${output}/Escherichia/*HierCC* plepiseq_data/Escherichia
-
-# Update timestamp
-date '+%D' > "plepiseq_data/timestamp"
 
 # Commiting new data to repo
 git add plepiseq_data/*
