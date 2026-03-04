@@ -140,11 +140,13 @@ echo "Running clustering for Campylobacter ~15 min on 250 CPUs"
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
        --user $(id -u):$(id -g) \
+       --ulimit nofile=262144:262144 \
        ${image_name} --profile "/dane/profiles.list" -n ${cpus} --clustering_method single
 
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
        --user $(id -u):$(id -g) \
+       --ulimit nofile=262144:262144 \
        ${image_name} --profile "/dane/profiles.list" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
 
 echo "Finished calculations for Campylobacter"
@@ -154,11 +156,13 @@ echo "Running clustering for Ecoli ~6 h on 250 CPUs"
 docker run --rm \
        --volume "${output}/Escherichia/:/dane:rw" \
        --user $(id -u):$(id -g) \
+       --ulimit nofile=262144:262144 \
        ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} --clustering_method single
 
 docker run --rm \
        --volume "${output}/Escherichia/:/dane:rw" \
        --user $(id -u):$(id -g) \
+       --ulimit nofile=262144:262144 \
        ${image_name} --profile "/dane/profiles.list.gz" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
 
 echo "Finished calculations for Ecoli"
@@ -168,11 +172,13 @@ echo "Running clustering for Salmonella ~15 h on 250 CPUs"
 docker run --rm \
        --volume "${output}/Salmonella/:/dane:rw" \
        --user $(id -u):$(id -g) \
+       --ulimit nofile=262144:262144 \
        ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} --clustering_method single
 
 docker run --rm \
        --volume "${output}/Salmonella/:/dane:rw" \
        --user $(id -u):$(id -g) \
+       --ulimit nofile=262144:262144 \
        ${image_name} --profile "/dane/profiles.list.gz" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
 
 echo "Finished calculations for Salmonella"
