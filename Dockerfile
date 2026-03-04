@@ -18,6 +18,15 @@ COPY cluster/_hierarchy.pyx /opt/scipy/scipy/cluster/_hierarchy.pyx
 
 RUN git submodule update --init
 RUN python -m pip install -r requirements/all.txt
+# Downgrade dependencies to fix compatibility issues with scipy 1.15.0
+RUN python -m pip install --upgrade --force-reinstall --no-cache-dir \
+"click==8.1.8" \
+"rich-click==1.8.5" \
+"doit==0.36.0" \
+"rich==13.9.4" \
+"pytest==8.3.4" \
+"pluggy==1.5.0"
+
 RUN python dev.py build
 RUN cp -r build-install/lib/python3.11/site-packages/scipy/ /usr/local/lib/python3.11/
 
@@ -26,7 +35,7 @@ WORKDIR /opt
 RUN git clone https://gitlab.com/moon548834/shared-array.git
 WORKDIR /opt/shared-array
 RUN python setup.py install
-RUN pip install pandas numba Click
+RUN pip install pandas numba
 RUN pip install --no-deps pHierCC
 COPY getDistance_github.py /usr/local/lib/python3.11/site-packages/pHierCC/getDistance.py
 COPY pHierCC_github.py /usr/local/lib/python3.11/site-packages/pHierCC/pHierCC.py
