@@ -31,10 +31,14 @@ try :
     from getDistance import getDistance
     from getDistance import Getsquareform
     from getDistance import dual_dist_single
+    from getDistance import ExpandSquareform
+    from getDistance import ExpandDistance
 except :
     from .getDistance import getDistance
     from .getDistance import Getsquareform
     from .getDistance import dual_dist_single
+    from .getDistance import ExpandSquareform
+    from .getDistance import ExpandDistance
 
 logging.basicConfig(format='%(asctime)s | %(message)s', stream=sys.stdout, level=logging.INFO)
 
@@ -116,40 +120,105 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     pHierCC functions takes a file containing allelic profiles (as in https://pubmlst.org/data/), calculates
     distance between each profile (dual_dist function from getDistance) and performs
     hierarchical clustering of the full dataset based on a minimum-spanning (or macimum) tree.
+
+    When ordering.npy and dist0.npy exist in the output directory (from a previous run)
+    and --profile_distance0 is NOT provided, incremental mode is activated: old
+    distances are reused and only pairs involving new STs are computed.
     """
 
     output_dir = os.path.dirname(profile)
-    # inicjalizacja nazw
-    profile_file, numpy_dist0_out, numpy_dist1_out = profile, f'{output_dir}/dist0.npy', f'{output_dir}/dist1.npy'
+    if not output_dir:
+        output_dir = '.'
+    profile_file = profile
+    numpy_dist0_out = f'{output_dir}/dist0.npy'
+    numpy_dist1_out = f'{output_dir}/dist1.npy'
+    ordering_path = f'{output_dir}/ordering.npy'
 
     # Read profiles file
     mat, names = prepare_mat(profile_file)
     n_loci = mat.shape[1] - 1
 
-    # Sort profile matrix to push down ST with higher number of missing alleles (allele version is "0")
-    absence = np.sum(mat <= 0, 1)
-    mat[:] = mat[np.argsort(absence, kind='mergesort')]
+    # --- Decide: incremental or full mode ---
+    incremental = False
+    old_n = 0
+    if (not profile_distance0
+            and os.path.exists(ordering_path)
+            and os.path.exists(numpy_dist0_out)):
+
+        old_ordering = np.load(ordering_path, allow_pickle=True)
+        old_n = len(old_ordering)
+
+        if old_n >= mat.shape[0]:
+            logging.info('No new STs compared to previous run – falling back to full mode.')
+        else:
+            new_st_set = set(int(x) for x in mat.T[0])
+            missing_sts = [st for st in old_ordering if int(st) not in new_st_set]
+
+            if missing_sts:
+                logging.warning(
+                    f'{len(missing_sts)} old STs missing from new profile '
+                    f'(e.g. {missing_sts[:5]}). Falling back to full mode.')
+            else:
+                expected_size = old_n * (old_n - 1) // 2
+                probe = np.load(numpy_dist0_out, mmap_mode='r', allow_pickle=True)
+                if probe.shape[0] != expected_size:
+                    logging.warning(
+                        f'Old dist0 size {probe.shape[0]} != expected {expected_size}. '
+                        f'Falling back to full mode.')
+                    del probe
+                else:
+                    del probe
+                    incremental = True
+
+    if incremental:
+        n_new_sts = mat.shape[0] - old_n
+        logging.info(
+            f'Incremental mode: {old_n} existing STs + {n_new_sts} new STs')
+
+        old_id_to_pos = {int(st): pos for pos, st in enumerate(old_ordering)}
+        old_mask = np.array([int(row[0]) in old_id_to_pos for row in mat])
+        new_mask = ~old_mask
+
+        old_rows = mat[old_mask]
+        old_sort = np.array([old_id_to_pos[int(st)] for st in old_rows.T[0]])
+        old_rows = old_rows[np.argsort(old_sort)]
+
+        new_rows = mat[new_mask]
+        new_absence = np.sum(new_rows[:, 1:] <= 0, axis=1)
+        new_rows = new_rows[np.argsort(new_absence, kind='mergesort')]
+
+        mat = np.vstack([old_rows, new_rows])
+    else:
+        absence = np.sum(mat <= 0, 1)
+        mat[:] = mat[np.argsort(absence, kind='mergesort')]
+
+    np.save(ordering_path, mat.T[0].copy(), allow_pickle=True, fix_imports=True)
 
     logging.info(
-        'Loaded in allelic profiles with dimension: {0} and {1}. The first column is assumed to be type id.'.format(
-            *mat.shape))
+        'Loaded in allelic profiles with dimension: {0} and {1}. '
+        'The first column is assumed to be type id.'.format(*mat.shape))
 
-    # Index in mat, set to non-0 to skip clustering of specific ST
     start = 0
 
-
-    # Calculate distance 0 matrix
+    # ---- Distance matrix 0 (condensed / squareform) ----
 
     if profile_distance0:
-        logging.info('Reading user-provided distance matrix 0 ')
-        dist = np.load(profile_distance0,  allow_pickle=True)
-    else:
-        logging.info('Calculate distance matrix 0')
+        logging.info('Reading user-provided distance matrix 0')
+        dist = np.load(profile_distance0, allow_pickle=True)
+    elif incremental:
+        logging.info('Expanding distance matrix 0 (incremental)')
         pool = Pool(n_proc)
-        # dual_dist_squareform_lessloop_optimized, dual_dist_squareform_lessloop lub dual_dist_squareform
-        dist = Getsquareform(mat, 'dual_dist_squareform', pool, output_dir, start, allowed_missing)
-        logging.info(f'Saving distance0 matrix 0 to {numpy_dist0_out}')
-        #zapisujemy surowy output dist tdo pliku
+        dist = ExpandSquareform(numpy_dist0_out, old_n, mat, pool,
+                                output_dir, allowed_missing)
+        logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
+        np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
+        pool.close()
+    else:
+        logging.info('Calculate distance matrix 0 (full)')
+        pool = Pool(n_proc)
+        dist = Getsquareform(mat, 'dual_dist_squareform', pool,
+                             output_dir, start, allowed_missing)
+        logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
         np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
         pool.close()
 
@@ -159,8 +228,7 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     res.T[0] = mat.T[0]
 
     logging.info(f'Start {clustering_method} linkage clustering')
-    slc = linkage(dist,  method=f'{clustering_method}')
-    # destroy dist object it takes a lot of RAM
+    slc = linkage(dist, method=f'{clustering_method}')
     del dist
 
 
@@ -175,15 +243,24 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
             res[index[tgt], c[2] + 1:] = res[index[min_id], c[2] + 1:]
 
 
-    # Second matrix cannot be calculated using Squareform we reverto to the original function
+    # ---- Distance matrix 1 (full lower-triangular) ----
+
     if profile_distance1:
         logging.info('Reading user-provided distance matrix 1')
-        dist = np.load(profile_distance1,  allow_pickle=True,  fix_imports=True)
+        dist = np.load(profile_distance1, allow_pickle=True, fix_imports=True)
+    elif incremental and os.path.exists(numpy_dist1_out):
+        logging.info('Expanding distance matrix 1 (incremental)')
+        pool = Pool(n_proc)
+        dist = ExpandDistance(numpy_dist1_out, old_n, mat, pool,
+                              output_dir, allowed_missing, depth=1)
+        logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
+        np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
+        pool.close()
     else:
         pool = Pool(n_proc)
-        logging.info('Calculate distance matrix 1')
-        dist = getDistance(mat, 'dual_dist', pool, output_dir, start, allowed_missing, depth=1)
-        # zapisujemy surowy output dist tdo pliku
+        logging.info('Calculate distance matrix 1 (full)')
+        dist = getDistance(mat, 'dual_dist', pool, output_dir,
+                           start, allowed_missing, depth=1)
         logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
         np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
         pool.close()
@@ -197,13 +274,10 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
             if r[min_d + 1] > res[i, min_d + 1]:
                 r[min_d + 1:] = res[i, min_d + 1:]
 
-    # teraz sortujemy res, tak by pierwsza kolumna byla od wartosci najmniejszych do najwiekszych
-    # w przypadku append chcemy po prostu miec na koncu res nasz wpis
     logging.info('Saving data.')
     res.T[0] = mat.T[0]
     res = res[np.argsort(res.T[0])]
 
-    #np.savez_compressed(cluster_file, hierCC=res, names=names)
     with gzip.open(f'{output_dir}/profile_{clustering_method}_linkage.HierCC.gz', 'wt') as fout:
         fout.write('#ST_id\t{0}\n'.format('\t'.join(['HC' + str(id) for id in np.arange(n_loci + 1)])))
         for n, r in zip(names, res):
