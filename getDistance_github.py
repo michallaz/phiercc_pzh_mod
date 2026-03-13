@@ -427,3 +427,183 @@ def dual_dist_squareform_lessloop_optimized(mat, s, e, dlugosc_wektora, allowed_
     dist = np.array(dist, dtype = np.int16)
     return dist
 
+
+# ---------------------------------------------------------------------------
+# Incremental (append) mode: reuse old distances, compute only new ST pairs
+# ---------------------------------------------------------------------------
+
+@nb.jit(nopython=True)
+def _dual_dist_squareform_append(mat, s, e, n_old, n, dist, allowed_missing=0.05):
+    """
+    Compute distances only for pairs involving at least one new ST and write
+    them directly into the full condensed distance vector.
+
+    For rows i in [s, e):
+      - i < n_old  → compute d(i, j) for j in [n_old, n)   (old-vs-new)
+      - i >= n_old → compute d(i, j) for j in [i+1, n)     (all new)
+
+    The condensed-vector position for pair (i, j) with i < j is:
+        pos = n*i - i*(i+1)//2 + (j - i - 1)
+    """
+    n_loci = mat.shape[1]
+    for i in range(s, e):
+        ql = np.sum(mat[i] > 0)
+        j_start = n_old if i < n_old else i + 1
+        for j in range(j_start, n):
+            rl, ad, al = 0., 1e-4, 1e-4
+            for k in range(n_loci):
+                if mat[j, k] > 0:
+                    rl += 1
+                    if mat[i, k] > 0:
+                        al += 1
+                        if mat[i, k] != mat[j, k]:
+                            ad += 1
+            ll = max(ql, rl) - allowed_missing * n_loci
+            if ll > al:
+                ad += ll - al
+                al = ll
+            pos = n * i - i * (i + 1) // 2 + (j - i - 1)
+            dist[pos] = np.int16(ad / al * n_loci + 0.5)
+
+
+def _dist_wrapper_squareform_append(data):
+    mat_buf, dist_buf, s, e, n_old, n, allowed_missing = data
+    mat = sa.attach(mat_buf)
+    dist = sa.attach(dist_buf)
+    if e > s:
+        sample = np.random.randint(0, 2, size=(4, 10)).astype(np.int32)
+        sample_d = np.zeros(int(4 * 3 / 2), dtype=np.int16)
+        _dual_dist_squareform_append(sample, 0, 2, 0, 4, sample_d, 0.05)
+        _dual_dist_squareform_append(mat[:, 1:], s, e, n_old, n, dist, allowed_missing)
+    del mat, dist
+
+
+def _parallel_squareform_append(mat_buf, dist_buf, n, n_old, pool, output_dir,
+                                allowed_missing=0.05):
+    n_pool = len(pool._pool)
+
+    total_new_pairs = n_old * (n - n_old)
+    for i in range(n_old, n):
+        total_new_pairs += n - 1 - i
+    target = total_new_pairs / n_pool
+
+    indices = []
+    s = 0
+    cumulative = 0
+    for i in range(n):
+        cumulative += (n - n_old) if i < n_old else (n - 1 - i)
+        if cumulative >= target and len(indices) < n_pool - 1:
+            indices.append([s, i + 1])
+            s = i + 1
+            cumulative = 0
+    indices.append([s, n])
+
+    with open(f'{output_dir}/macierz_indeksy_append.txt', 'w') as f:
+        for si, ei in indices:
+            f.write(f'Append mode: rows {si} to {ei}\n')
+
+    for _ in pool.imap_unordered(
+        _dist_wrapper_squareform_append,
+        [[mat_buf, dist_buf, si, ei, n_old, n, allowed_missing]
+         for si, ei in indices]):
+        pass
+
+
+def ExpandSquareform(old_dist_path, old_n, new_mat, pool, output_dir,
+                     allowed_missing=0.0):
+    """
+    Expand an existing condensed distance vector with newly appended STs.
+
+    Parameters
+    ----------
+    old_dist_path : str
+        Path to the .npy file with the previous condensed distance vector.
+    old_n : int
+        Number of STs in the previous run (indices 0..old_n-1 in new_mat must
+        be in the same order as last time).
+    new_mat : ndarray, shape (n_new, n_loci+1), int32
+        Full profile matrix – first old_n rows in old order, remaining rows are
+        new STs.
+    pool : multiprocessing.Pool
+    output_dir : str
+    allowed_missing : float
+
+    Returns
+    -------
+    dist : ndarray, 1-D int16
+        New condensed distance vector of length n_new*(n_new-1)/2.
+    """
+    n_new = new_mat.shape[0]
+    old_dist = np.load(old_dist_path, mmap_mode='r', allow_pickle=True)
+
+    with NamedTemporaryFile(dir=output_dir, prefix='HCC_') as file:
+        prefix = f'file://{file.name}'
+
+        mat_buf = f'{prefix}.mat.sa'
+        mat = sa.create(mat_buf, shape=new_mat.shape, dtype=new_mat.dtype)
+        mat[:] = new_mat[:]
+
+        dist_buf = f'{prefix}.dist.sa'
+        new_size = int(n_new * (n_new - 1) / 2)
+        dist = sa.create(dist_buf, shape=new_size, dtype=np.int16)
+        dist[:] = 0
+
+        logging.info(f'Copying old condensed distances ({old_n} STs) into new vector ({n_new} STs)')
+        for i in range(old_n):
+            old_start = old_n * i - i * (i + 1) // 2
+            new_start = n_new * i - i * (i + 1) // 2
+            length = old_n - 1 - i
+            if length > 0:
+                dist[new_start:new_start + length] = old_dist[old_start:old_start + length]
+
+        del old_dist
+
+        n_new_sts = n_new - old_n
+        total_new = old_n * n_new_sts + n_new_sts * (n_new_sts - 1) // 2
+        logging.info(f'Computing {total_new} new pairwise distances ({n_new_sts} new STs)')
+
+        _parallel_squareform_append(
+            mat_buf=mat_buf,
+            dist_buf=dist_buf,
+            n=n_new,
+            n_old=old_n,
+            pool=pool,
+            output_dir=output_dir,
+            allowed_missing=allowed_missing)
+
+        sa.delete(mat_buf)
+        sa.delete(dist_buf)
+
+    return dist
+
+
+def ExpandDistance(old_dist_path, old_n, new_mat, pool, output_dir,
+                  allowed_missing=0.0, depth=0):
+    """
+    Expand an existing full distance matrix (n_old, n_old, 1) with new STs.
+
+    Old rows are copied from the previous matrix; new rows (indices
+    old_n..n_new-1) are computed via getDistance with start=old_n.
+    Uses mmap on the old file to avoid loading ~720 GB into RAM at once.
+
+    Returns
+    -------
+    full_dist : ndarray, shape (n_new, n_new, 1), int16
+    """
+    n_new = new_mat.shape[0]
+
+    new_rows = getDistance(new_mat, 'dual_dist', pool, output_dir,
+                           start=old_n, allowed_missing=allowed_missing,
+                           depth=depth)
+
+    full_dist = np.zeros((n_new, n_new, 1), dtype=np.int16)
+
+    old_dist = np.load(old_dist_path, mmap_mode='r', allow_pickle=True)
+    full_dist[:old_n, :old_n, :] = old_dist[:, :, :]
+    del old_dist
+
+    full_dist[old_n:, :, :] = new_rows
+    del new_rows
+
+    return full_dist
+
