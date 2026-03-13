@@ -96,6 +96,42 @@ def prepare_mat(profile_file):
     return mat, names
 
 
+def _split_local(rows, row_names):
+    """
+    Split rows into public and local STs.  Local STs (names starting with
+    'local_') are always placed after public ones.  Within each group rows
+    are sorted by number of missing alleles (ascending).
+
+    Returns (pub_rows, loc_rows, pub_names_sorted, loc_names_sorted).
+    """
+    pub_idx = [i for i, n in enumerate(row_names) if not n.startswith('local_')]
+    loc_idx = [i for i, n in enumerate(row_names) if n.startswith('local_')]
+
+    if pub_idx:
+        pub_rows = rows[np.array(pub_idx)]
+        pub_names = [row_names[i] for i in pub_idx]
+        pub_abs = np.sum(pub_rows[:, 1:] <= 0, axis=1)
+        pub_order = np.argsort(pub_abs, kind='mergesort')
+        pub_rows = pub_rows[pub_order]
+        pub_names = [pub_names[i] for i in pub_order]
+    else:
+        pub_rows = np.empty((0, rows.shape[1]), dtype=rows.dtype)
+        pub_names = []
+
+    if loc_idx:
+        loc_rows = rows[np.array(loc_idx)]
+        loc_names = [row_names[i] for i in loc_idx]
+        loc_abs = np.sum(loc_rows[:, 1:] <= 0, axis=1)
+        loc_order = np.argsort(loc_abs, kind='mergesort')
+        loc_rows = loc_rows[loc_order]
+        loc_names = [loc_names[i] for i in loc_order]
+    else:
+        loc_rows = np.empty((0, rows.shape[1]), dtype=rows.dtype)
+        loc_names = []
+
+    return pub_rows, loc_rows, pub_names, loc_names
+
+
 @click.command()
 @click.option('-p', '--profile', help='[INPUT] name of a profile file consisting of a '
                                       'table of columns of the ST numbers and the allelic numbers, '
@@ -138,6 +174,13 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     mat, names = prepare_mat(profile_file)
     n_loci = mat.shape[1] - 1
 
+    # Build a stable lookup from mat row index → original name.
+    # For numeric IDs names == mat.T[0]; for text IDs (e.g. "local_1")
+    # mat.T[0] holds synthetic sequential integers while names keeps the
+    # original strings.  We always use names for tracking between runs.
+    idx_to_name = {i: str(names[i]) for i in range(len(names))}
+    matid_to_name = {int(mat[i, 0]): str(names[i]) for i in range(mat.shape[0])}
+
     # --- Decide: incremental or full mode ---
     incremental = False
     old_n = 0
@@ -147,12 +190,13 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
 
         old_ordering = np.load(ordering_path, allow_pickle=True)
         old_n = len(old_ordering)
+        old_ordering_str = [str(x) for x in old_ordering]
 
         if old_n >= mat.shape[0]:
             logging.info('No new STs compared to previous run – falling back to full mode.')
         else:
-            new_st_set = set(int(x) for x in mat.T[0])
-            missing_sts = [st for st in old_ordering if int(st) not in new_st_set]
+            new_name_set = set(str(n) for n in names)
+            missing_sts = [st for st in old_ordering_str if st not in new_name_set]
 
             if missing_sts:
                 logging.warning(
@@ -175,24 +219,42 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
         logging.info(
             f'Incremental mode: {old_n} existing STs + {n_new_sts} new STs')
 
-        old_id_to_pos = {int(st): pos for pos, st in enumerate(old_ordering)}
-        old_mask = np.array([int(row[0]) in old_id_to_pos for row in mat])
+        old_name_to_pos = {st: pos for pos, st in enumerate(old_ordering_str)}
+        name_for_row = [matid_to_name[int(row[0])] for row in mat]
+
+        old_mask = np.array([n in old_name_to_pos for n in name_for_row])
         new_mask = ~old_mask
 
         old_rows = mat[old_mask]
-        old_sort = np.array([old_id_to_pos[int(st)] for st in old_rows.T[0]])
+        old_names_subset = [n for n, m in zip(name_for_row, old_mask) if m]
+        old_sort = np.array([old_name_to_pos[n] for n in old_names_subset])
         old_rows = old_rows[np.argsort(old_sort)]
 
         new_rows = mat[new_mask]
-        new_absence = np.sum(new_rows[:, 1:] <= 0, axis=1)
-        new_rows = new_rows[np.argsort(new_absence, kind='mergesort')]
+        new_names_subset = [n for n, m in zip(name_for_row, new_mask) if m]
+
+        new_public, new_local, names_pub, names_loc = _split_local(
+            new_rows, new_names_subset)
+        new_rows = np.vstack([new_public, new_local]) if len(new_local) else new_public
+        sorted_new_names = names_pub + names_loc
 
         mat = np.vstack([old_rows, new_rows])
-    else:
-        absence = np.sum(mat <= 0, 1)
-        mat[:] = mat[np.argsort(absence, kind='mergesort')]
 
-    np.save(ordering_path, mat.T[0].copy(), allow_pickle=True, fix_imports=True)
+        sorted_old_names = [old_ordering_str[i] for i in np.argsort(old_sort)]
+        ordered_names = sorted_old_names + sorted_new_names
+    else:
+        mat_names = [str(names[i]) for i in range(len(names))]
+        pub_rows, loc_rows, pub_names, loc_names = _split_local(
+            mat, mat_names)
+
+        if len(loc_rows):
+            mat = np.vstack([pub_rows, loc_rows])
+        else:
+            mat = pub_rows
+        ordered_names = pub_names + loc_names
+
+    np.save(ordering_path, np.array(ordered_names, dtype=object),
+            allow_pickle=True, fix_imports=True)
 
     logging.info(
         'Loaded in allelic profiles with dimension: {0} and {1}. '
