@@ -265,10 +265,219 @@ def test_new_pair_positions():
     logging.info('  PASSED')
 
 
+def test_mixed_ids():
+    """
+    Test the scenario where public (numeric) and local (text) STs are combined.
+
+    Week 1: 9 public STs (profiles_9ST.list)
+    Week 2: 9 public + 9 local STs (concatenated)
+
+    Verifies that names-based ordering correctly identifies old STs even when
+    prepare_mat assigns synthetic sequential integers to the mixed-ID file.
+    """
+    logging.info('--- Test 4: Mixed numeric + text ST IDs ---')
+    PROFILE_LOCAL = os.path.join(BASE, 'test_data', 'profiles_9ST_local.list')
+
+    # Week 1: public only (numeric IDs)
+    mat_pub, names_pub = prepare_mat(PROFILE_9)
+    absence = np.sum(mat_pub <= 0, 1)
+    sort_idx = np.argsort(absence, kind='mergesort')
+    mat_pub[:] = mat_pub[sort_idx]
+    ordered_names_w1 = [str(names_pub[i]) for i in sort_idx]
+    old_n = len(ordered_names_w1)
+
+    logging.info(f'  Week 1 names: {ordered_names_w1}')
+
+    # Week 2: combine public + local into one file (simulated)
+    mat_local, names_local = prepare_mat(PROFILE_LOCAL)
+
+    # When files are concatenated, both go through prepare_mat together.
+    # Simulate: create a combined profile file in memory
+    import tempfile
+    with open(PROFILE_9) as f:
+        lines_pub = f.readlines()
+    with open(PROFILE_LOCAL) as f:
+        lines_local = f.readlines()
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.list', delete=False,
+                                     dir=BASE) as tmp:
+        tmp.write(lines_pub[0])  # header
+        for line in lines_pub[1:]:
+            tmp.write(line)
+        for line in lines_local[1:]:  # skip header
+            tmp.write(line)
+        tmp_path = tmp.name
+
+    try:
+        mat_combined, names_combined = prepare_mat(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    logging.info(f'  Combined names: {[str(n) for n in names_combined]}')
+    logging.info(f'  Combined mat.T[0]: {mat_combined.T[0].tolist()}')
+
+    # names_combined should have original IDs: ["1","2",...,"9","local_1",...,"local_9"]
+    # mat_combined.T[0] will be [1,2,...,18] (sequential, because text IDs forced except branch)
+    combined_name_set = set(str(n) for n in names_combined)
+
+    # Verify all week-1 names are found in the combined set
+    missing = [n for n in ordered_names_w1 if n not in combined_name_set]
+    assert len(missing) == 0, f'Week 1 names missing from combined: {missing}'
+
+    # Build the matid→name mapping (as the real code does)
+    matid_to_name = {int(mat_combined[i, 0]): str(names_combined[i])
+                     for i in range(mat_combined.shape[0])}
+    name_for_row = [matid_to_name[int(row[0])] for row in mat_combined]
+
+    # Simulate incremental reordering
+    old_name_to_pos = {st: pos for pos, st in enumerate(ordered_names_w1)}
+    old_mask = np.array([n in old_name_to_pos for n in name_for_row])
+    new_mask = ~old_mask
+
+    n_old_found = old_mask.sum()
+    n_new_found = new_mask.sum()
+
+    logging.info(f'  Old STs matched: {n_old_found}, new STs: {n_new_found}')
+    assert n_old_found == old_n, f'Expected {old_n} old STs, found {n_old_found}'
+    assert n_new_found == len(names_combined) - old_n
+
+    # Verify the old rows get sorted back to their original order
+    old_rows = mat_combined[old_mask]
+    old_names_subset = [n for n, m in zip(name_for_row, old_mask) if m]
+    old_sort = np.array([old_name_to_pos[n] for n in old_names_subset])
+    old_rows_sorted = old_rows[np.argsort(old_sort)]
+
+    # The allele data for each old ST should match between week1 and combined
+    for i in range(old_n):
+        w1_alleles = mat_pub[i, 1:]
+        combined_alleles = old_rows_sorted[i, 1:]
+        assert np.array_equal(w1_alleles, combined_alleles), \
+            f'Allele mismatch for old ST at position {i}'
+
+    logging.info('  PASSED')
+
+
+def test_local_pushed_down():
+    """
+    Test that local_ STs are always placed after public STs in the ordering,
+    both for full-mode and incremental-mode sorting.
+    """
+    logging.info('--- Test 5: local_ STs pushed to bottom ---')
+    PROFILE_LOCAL = os.path.join(BASE, 'test_data', 'profiles_9ST_local.list')
+
+    import tempfile
+    with open(PROFILE_9) as f:
+        lines_pub = f.readlines()
+    with open(PROFILE_LOCAL) as f:
+        lines_local = f.readlines()
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.list', delete=False,
+                                     dir=BASE) as tmp:
+        tmp.write(lines_pub[0])
+        for line in lines_pub[1:]:
+            tmp.write(line)
+        for line in lines_local[1:]:
+            tmp.write(line)
+        tmp_path = tmp.name
+
+    try:
+        mat, names = prepare_mat(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    mat_names = [str(n) for n in names]
+
+    # --- Full-mode sort: public first (by absence), local last (by absence) ---
+    pub_idx = [i for i, n in enumerate(mat_names) if not n.startswith('local_')]
+    loc_idx = [i for i, n in enumerate(mat_names) if n.startswith('local_')]
+
+    pub_rows = mat[np.array(pub_idx)]
+    pub_names = [mat_names[i] for i in pub_idx]
+    pub_abs = np.sum(pub_rows[:, 1:] <= 0, axis=1)
+    pub_order = np.argsort(pub_abs, kind='mergesort')
+    pub_rows = pub_rows[pub_order]
+    pub_names = [pub_names[i] for i in pub_order]
+
+    loc_rows = mat[np.array(loc_idx)]
+    loc_names = [mat_names[i] for i in loc_idx]
+    loc_abs = np.sum(loc_rows[:, 1:] <= 0, axis=1)
+    loc_order = np.argsort(loc_abs, kind='mergesort')
+    loc_rows = loc_rows[loc_order]
+    loc_names = [loc_names[i] for i in loc_order]
+
+    ordered = pub_names + loc_names
+    logging.info(f'  Full-mode ordering: {ordered}')
+
+    split_point = len(pub_names)
+    for i in range(split_point):
+        assert not ordered[i].startswith('local_'), \
+            f'Public section has local ST at position {i}: {ordered[i]}'
+    for i in range(split_point, len(ordered)):
+        assert ordered[i].startswith('local_'), \
+            f'Local section has public ST at position {i}: {ordered[i]}'
+
+    # --- Incremental mode: old order preserved, new STs split public/local ---
+    old_ordered = ordered[:9]  # simulate week-1 = first 9 public STs
+    old_n = len(old_ordered)
+    logging.info(f'  Week-1 ordering (first 9 public): {old_ordered}')
+
+    matid_to_name = {int(mat[i, 0]): str(names[i]) for i in range(mat.shape[0])}
+    name_for_row = [matid_to_name[int(row[0])] for row in mat]
+
+    old_name_to_pos = {st: pos for pos, st in enumerate(old_ordered)}
+    old_mask = np.array([n in old_name_to_pos for n in name_for_row])
+    new_mask = ~old_mask
+
+    new_rows = mat[new_mask]
+    new_names_subset = [n for n, m in zip(name_for_row, new_mask) if m]
+
+    new_pub_idx = [i for i, n in enumerate(new_names_subset)
+                   if not n.startswith('local_')]
+    new_loc_idx = [i for i, n in enumerate(new_names_subset)
+                   if n.startswith('local_')]
+
+    if new_pub_idx:
+        np_rows = new_rows[np.array(new_pub_idx)]
+        np_names = [new_names_subset[i] for i in new_pub_idx]
+        np_abs = np.sum(np_rows[:, 1:] <= 0, axis=1)
+        np_order = np.argsort(np_abs, kind='mergesort')
+        np_rows = np_rows[np_order]
+        np_names = [np_names[i] for i in np_order]
+    else:
+        np_names = []
+
+    if new_loc_idx:
+        nl_rows = new_rows[np.array(new_loc_idx)]
+        nl_names = [new_names_subset[i] for i in new_loc_idx]
+        nl_abs = np.sum(nl_rows[:, 1:] <= 0, axis=1)
+        nl_order = np.argsort(nl_abs, kind='mergesort')
+        nl_names = [nl_names[i] for i in nl_order]
+    else:
+        nl_names = []
+
+    incremental_order = old_ordered + np_names + nl_names
+    logging.info(f'  Incremental ordering: {incremental_order}')
+
+    # All local_ should come after all non-local
+    first_local = None
+    for i, n in enumerate(incremental_order):
+        if n.startswith('local_'):
+            first_local = i
+            break
+    if first_local is not None:
+        for i in range(first_local, len(incremental_order)):
+            assert incremental_order[i].startswith('local_'), \
+                f'Non-local ST found after first local at pos {i}: {incremental_order[i]}'
+
+    logging.info('  PASSED')
+
+
 def main():
     test_new_pair_positions()
     test_condensed_copy()
     test_dist1_copy()
+    test_mixed_ids()
+    test_local_pushed_down()
     logging.info('=== ALL TESTS PASSED ===')
 
 
