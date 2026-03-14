@@ -31,11 +31,6 @@ RUN python -m pip install --upgrade --force-reinstall --no-cache-dir \
 RUN python dev.py build
 RUN cp -r build-install/lib/python3.11/site-packages/scipy/ /usr/local/lib/python3.11/
 
-# instalowanie poprawnej wersji sharred-array
-WORKDIR /opt
-RUN git clone https://gitlab.com/moon548834/shared-array.git
-WORKDIR /opt/shared-array
-RUN python setup.py install
 RUN pip install pandas numba tbb
 RUN pip install --no-deps pHierCC
 COPY getDistance_github.py /usr/local/lib/python3.11/site-packages/pHierCC/getDistance.py
