@@ -23,18 +23,19 @@
 
 import sys, gzip, logging, click
 import pandas as pd, numpy as np
-from multiprocessing import Pool
 from scipy.cluster.hierarchy import linkage
 import os
 
 try :
-    from getDistance import getDistance
-    from getDistance import Getsquareform
-    from getDistance import dual_dist_single
+    from getDistance import GetSquareformParallel
+    from getDistance import GetDistanceParallel
+    from getDistance import ExpandSquareformParallel
+    from getDistance import ExpandDistanceParallel
 except :
-    from .getDistance import getDistance
-    from .getDistance import Getsquareform
-    from .getDistance import dual_dist_single
+    from .getDistance import GetSquareformParallel
+    from .getDistance import GetDistanceParallel
+    from .getDistance import ExpandSquareformParallel
+    from .getDistance import ExpandDistanceParallel
 
 logging.basicConfig(format='%(asctime)s | %(message)s', stream=sys.stdout, level=logging.INFO)
 
@@ -92,6 +93,42 @@ def prepare_mat(profile_file):
     return mat, names
 
 
+def _split_local(rows, row_names):
+    """
+    Split rows into public and local STs.  Local STs (names starting with
+    'local_') are always placed after public ones.  Within each group rows
+    are sorted by number of missing alleles (ascending).
+
+    Returns (pub_rows, loc_rows, pub_names_sorted, loc_names_sorted).
+    """
+    pub_idx = [i for i, n in enumerate(row_names) if not n.startswith('local_')]
+    loc_idx = [i for i, n in enumerate(row_names) if n.startswith('local_')]
+
+    if pub_idx:
+        pub_rows = rows[np.array(pub_idx)]
+        pub_names = [row_names[i] for i in pub_idx]
+        pub_abs = np.sum(pub_rows[:, 1:] <= 0, axis=1)
+        pub_order = np.argsort(pub_abs, kind='mergesort')
+        pub_rows = pub_rows[pub_order]
+        pub_names = [pub_names[i] for i in pub_order]
+    else:
+        pub_rows = np.empty((0, rows.shape[1]), dtype=rows.dtype)
+        pub_names = []
+
+    if loc_idx:
+        loc_rows = rows[np.array(loc_idx)]
+        loc_names = [row_names[i] for i in loc_idx]
+        loc_abs = np.sum(loc_rows[:, 1:] <= 0, axis=1)
+        loc_order = np.argsort(loc_abs, kind='mergesort')
+        loc_rows = loc_rows[loc_order]
+        loc_names = [loc_names[i] for i in loc_order]
+    else:
+        loc_rows = np.empty((0, rows.shape[1]), dtype=rows.dtype)
+        loc_names = []
+
+    return pub_rows, loc_rows, pub_names, loc_names
+
+
 @click.command()
 @click.option('-p', '--profile', help='[INPUT] name of a profile file consisting of a '
                                       'table of columns of the ST numbers and the allelic numbers, '
@@ -111,47 +148,141 @@ def prepare_mat(profile_file):
 @click.option('--clustering_method', help='[INPUT; optional] A linkage criterion for clustering '
                                           ' (Default: single).', default="single",
               type=click.Choice(['single', 'complete']))
-def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_method, allowed_missing):
+@click.option('--clean', is_flag=True, default=False,
+              help='Force full recalculation from scratch, removing any previous '
+                   'run artefacts (dist0.npy, dist1.npy, ordering.npy).')
+def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_method, allowed_missing, clean):
     """
     pHierCC functions takes a file containing allelic profiles (as in https://pubmlst.org/data/), calculates
     distance between each profile (dual_dist function from getDistance) and performs
     hierarchical clustering of the full dataset based on a minimum-spanning (or macimum) tree.
+
+    When ordering.npy and dist0.npy exist in the output directory (from a previous run)
+    and --profile_distance0 is NOT provided, incremental mode is activated: old
+    distances are reused and only pairs involving new STs are computed.
     """
 
     output_dir = os.path.dirname(profile)
-    # inicjalizacja nazw
-    profile_file, numpy_dist0_out, numpy_dist1_out = profile, f'{output_dir}/dist0.npy', f'{output_dir}/dist1.npy'
+    if not output_dir:
+        output_dir = '.'
+    profile_file = profile
+    numpy_dist0_out = f'{output_dir}/dist0.npy'
+    numpy_dist1_out = f'{output_dir}/dist1.npy'
+    ordering_path = f'{output_dir}/ordering.npy'
+
+    if clean:
+        for f in (numpy_dist0_out, numpy_dist1_out, ordering_path):
+            if os.path.exists(f):
+                os.remove(f)
+                logging.info(f'--clean: removed {f}')
 
     # Read profiles file
     mat, names = prepare_mat(profile_file)
     n_loci = mat.shape[1] - 1
 
-    # Sort profile matrix to push down ST with higher number of missing alleles (allele version is "0")
-    absence = np.sum(mat <= 0, 1)
-    mat[:] = mat[np.argsort(absence, kind='mergesort')]
+    # Build a stable lookup from mat row index → original name.
+    # For numeric IDs names == mat.T[0]; for text IDs (e.g. "local_1")
+    # mat.T[0] holds synthetic sequential integers while names keeps the
+    # original strings.  We always use names for tracking between runs.
+    matid_to_name = {int(mat[i, 0]): str(names[i]) for i in range(mat.shape[0])}
+
+    # --- Decide: incremental or full mode ---
+    incremental = False
+    old_n = 0
+    if (not profile_distance0
+            and os.path.exists(ordering_path)
+            and os.path.exists(numpy_dist0_out)):
+
+        old_ordering = np.load(ordering_path, allow_pickle=True)
+        old_n = len(old_ordering)
+        old_ordering_str = [str(x) for x in old_ordering]
+
+        if old_n >= mat.shape[0]:
+            logging.info('No new STs compared to previous run – falling back to full mode.')
+        else:
+            new_name_set = set(str(n) for n in names)
+            missing_sts = [st for st in old_ordering_str if st not in new_name_set]
+
+            if missing_sts:
+                logging.warning(
+                    f'{len(missing_sts)} old STs missing from new profile '
+                    f'(e.g. {missing_sts[:5]}). Falling back to full mode.')
+            else:
+                expected_size = old_n * (old_n - 1) // 2
+                probe = np.load(numpy_dist0_out, mmap_mode='r', allow_pickle=True)
+                if probe.shape[0] != expected_size:
+                    logging.warning(
+                        f'Old dist0 size {probe.shape[0]} != expected {expected_size}. '
+                        f'Falling back to full mode.')
+                    del probe
+                else:
+                    del probe
+                    incremental = True
+
+    if incremental:
+        n_new_sts = mat.shape[0] - old_n
+        logging.info(
+            f'Incremental mode: {old_n} existing STs + {n_new_sts} new STs')
+
+        old_name_to_pos = {st: pos for pos, st in enumerate(old_ordering_str)}
+        name_for_row = [matid_to_name[int(row[0])] for row in mat]
+
+        old_mask = np.array([n in old_name_to_pos for n in name_for_row])
+        new_mask = ~old_mask
+
+        old_rows = mat[old_mask]
+        old_names_subset = [n for n, m in zip(name_for_row, old_mask) if m]
+        old_sort = np.array([old_name_to_pos[n] for n in old_names_subset])
+        old_rows = old_rows[np.argsort(old_sort)]
+
+        new_rows = mat[new_mask]
+        new_names_subset = [n for n, m in zip(name_for_row, new_mask) if m]
+
+        new_public, new_local, names_pub, names_loc = _split_local(
+            new_rows, new_names_subset)
+        new_rows = np.vstack([new_public, new_local]) if len(new_local) else new_public
+        sorted_new_names = names_pub + names_loc
+
+        mat = np.vstack([old_rows, new_rows])
+
+        sorted_old_names = [old_ordering_str[i] for i in np.argsort(old_sort)]
+        ordered_names = sorted_old_names + sorted_new_names
+    else:
+        mat_names = [str(names[i]) for i in range(len(names))]
+        pub_rows, loc_rows, pub_names, loc_names = _split_local(
+            mat, mat_names)
+
+        if len(loc_rows):
+            mat = np.vstack([pub_rows, loc_rows])
+        else:
+            mat = pub_rows
+        ordered_names = pub_names + loc_names
+
+    np.save(ordering_path, np.array(ordered_names, dtype=object),
+            allow_pickle=True, fix_imports=True)
 
     logging.info(
-        'Loaded in allelic profiles with dimension: {0} and {1}. The first column is assumed to be type id.'.format(
-            *mat.shape))
+        'Loaded in allelic profiles with dimension: {0} and {1}. '
+        'The first column is assumed to be type id.'.format(*mat.shape))
 
-    # Index in mat, set to non-0 to skip clustering of specific ST
     start = 0
 
-
-    # Calculate distance 0 matrix
+    # ---- Distance matrix 0 (condensed / squareform) ----
 
     if profile_distance0:
-        logging.info('Reading user-provided distance matrix 0 ')
-        dist = np.load(profile_distance0,  allow_pickle=True)
-    else:
-        logging.info('Calculate distance matrix 0')
-        pool = Pool(n_proc)
-        # dual_dist_squareform_lessloop_optimized, dual_dist_squareform_lessloop lub dual_dist_squareform
-        dist = Getsquareform(mat, 'dual_dist_squareform', pool, output_dir, start, allowed_missing)
-        logging.info(f'Saving distance0 matrix 0 to {numpy_dist0_out}')
-        #zapisujemy surowy output dist tdo pliku
+        logging.info('Reading user-provided distance matrix 0')
+        dist = np.load(profile_distance0, allow_pickle=True)
+    elif incremental:
+        logging.info('Expanding distance matrix 0 (incremental)')
+        dist = ExpandSquareformParallel(numpy_dist0_out, old_n, mat,
+                                        n_proc, allowed_missing)
+        logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
         np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
-        pool.close()
+    else:
+        logging.info('Calculate distance matrix 0 (full)')
+        dist = GetSquareformParallel(mat, n_proc, allowed_missing)
+        logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
+        np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
 
     # create object for an output matrix
     res = np.repeat(mat.T[0], int(mat.shape[1]) + 1).reshape(mat.shape[0], -1)
@@ -159,8 +290,7 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     res.T[0] = mat.T[0]
 
     logging.info(f'Start {clustering_method} linkage clustering')
-    slc = linkage(dist,  method=f'{clustering_method}')
-    # destroy dist object it takes a lot of RAM
+    slc = linkage(dist, method=f'{clustering_method}')
     del dist
 
 
@@ -175,18 +305,22 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
             res[index[tgt], c[2] + 1:] = res[index[min_id], c[2] + 1:]
 
 
-    # Second matrix cannot be calculated using Squareform we reverto to the original function
+    # ---- Distance matrix 1 (full lower-triangular) ----
+
     if profile_distance1:
         logging.info('Reading user-provided distance matrix 1')
-        dist = np.load(profile_distance1,  allow_pickle=True,  fix_imports=True)
-    else:
-        pool = Pool(n_proc)
-        logging.info('Calculate distance matrix 1')
-        dist = getDistance(mat, 'dual_dist', pool, output_dir, start, allowed_missing, depth=1)
-        # zapisujemy surowy output dist tdo pliku
+        dist = np.load(profile_distance1, allow_pickle=True, fix_imports=True)
+    elif incremental and os.path.exists(numpy_dist1_out):
+        logging.info('Expanding distance matrix 1 (incremental)')
+        dist = ExpandDistanceParallel(numpy_dist1_out, old_n, mat,
+                                       n_proc, allowed_missing, depth=1)
         logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
         np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
-        pool.close()
+    else:
+        logging.info('Calculate distance matrix 1 (full)')
+        dist = GetDistanceParallel(mat, n_proc, start, allowed_missing, depth=1)
+        logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
+        np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
 
 
     logging.info('Attach genomes onto the tree.')
@@ -197,13 +331,10 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
             if r[min_d + 1] > res[i, min_d + 1]:
                 r[min_d + 1:] = res[i, min_d + 1:]
 
-    # teraz sortujemy res, tak by pierwsza kolumna byla od wartosci najmniejszych do najwiekszych
-    # w przypadku append chcemy po prostu miec na koncu res nasz wpis
     logging.info('Saving data.')
     res.T[0] = mat.T[0]
     res = res[np.argsort(res.T[0])]
 
-    #np.savez_compressed(cluster_file, hierCC=res, names=names)
     with gzip.open(f'{output_dir}/profile_{clustering_method}_linkage.HierCC.gz', 'wt') as fout:
         fout.write('#ST_id\t{0}\n'.format('\t'.join(['HC' + str(id) for id in np.arange(n_loci + 1)])))
         for n, r in zip(names, res):
