@@ -1,6 +1,15 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-03-14
+### Changed
+- Rewritten `plepiseq_bin/run_clustering.sh` to support incremental distance matrix computation by preserving `.npy` artefacts between weekly runs.
+- Added `--clean` flag to the wrapper script, passed through to pHierCC to force full recalculation.
+- Replaced `git add/commit/push` of clustering results with `gh release create`, publishing output files as GitHub Release assets instead of committing binary data to the repository.
+- Removed `plepiseq_data/` from git tracking and purged historical binary blobs (reduced repository size from ~2 GiB to ~120 KiB).
+- Added `set -euo pipefail` to the wrapper script for fail-fast behaviour.
+- Added `gh` CLI availability check at script startup.
+
 ## [0.1.0] - 2026-03-14
 ### Added
 - Initial working version based on the original [pHierCC](https://github.com/zheminzhou/pHierCC) by Zhou et al.

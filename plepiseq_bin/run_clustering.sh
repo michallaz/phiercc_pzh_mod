@@ -1,32 +1,44 @@
 #!/bin/bash
+set -euo pipefail
 ### Script downloads cgMLST profiles for Campylobacter, Salmonella and Ecoli
-### and perform clustering using pHierCC methodology
-### moves relevant data are strored in ../plepiseq_data/
-### and commits chages to the repository
-### The sctipt accepts two variables 
-### --image image name with tag build using provided Dockerfile
-### --output_dir path to the top level directory where intermediate calculations are carried out
-### if direcotry does not exist it will be created
-### if directory exists Salmonella/ Campylobacter/ and Escherichia subdirecories will be REMOVED
-### Sctipt MUST be executed from main directory of the cloned repo, to commit all the changes
-### Script will crash if machine has less than 600 Gb of RAM 
-### ./plepiseq_bin/run_clustering.sh --output_dir /mnt/raid/michall/pHierCC --image_name "phiercc_custom:2.0" --cpus 250
-output_dir="" 
+### and performs clustering using pHierCC methodology.
+###
+### By default, calculations are incremental: distance matrices (dist0.npy,
+### dist1.npy) and ordering (ordering.npy) from a previous run are reused,
+### and only pairs involving new STs are computed. Pass --clean to force a
+### full recalculation from scratch.
+###
+### Results are published as a GitHub Release (requires gh CLI).
+###
+### --image_name  Docker image name with tag built from the provided Dockerfile
+### --output_dir  Top-level directory for intermediate calculations; species
+###               subdirectories are created automatically. Previous .npy files
+###               are preserved across runs unless --clean is passed.
+### --cpus        Number of threads for Numba parallel distance computation
+### --clean       Force full recalculation (removes cached distance matrices)
+###
+### Script will crash if machine has less than 600 Gb of RAM
+### Example:
+### ./plepiseq_bin/run_clustering.sh --output_dir /mnt/raid/michall/pHierCC \
+###     --image_name "phiercc_custom:2.0" --cpus 250
+
+output_dir=""
 image_name=""
 cpus=1
+clean=false
 
-
-# Function to display help message
 function show_help() {
-    echo "Usage: $0 --output_dir <path> --image_name <string> --cpus <int>"
-    echo "Script must be executed from main directory of the phiercc_pzh_mod repo, to commit all the changes"
+    echo "Usage: $0 --output_dir <path> --image_name <string> --cpus <int> [--clean]"
+    echo ""
     echo "Options:"
-
+    echo "  --output_dir   Path to top-level directory for calculations"
+    echo "  --image_name   Docker image name:tag built from the Dockerfile"
+    echo "  --cpus         Number of CPUs/threads (default: 1)"
+    echo "  --clean        Force full recalculation (remove cached .npy files)"
+    echo "  -h, --help     Show this help message"
 }
 
-
-OPTIONS=$(getopt -o h --long output_dir:,image_name:,cpus:,help -- "$@")
-
+OPTIONS=$(getopt -o h --long output_dir:,image_name:,cpus:,clean,help -- "$@")
 eval set -- "$OPTIONS"
 
 if [[ $# -eq 1 ]]; then
@@ -35,20 +47,23 @@ if [[ $# -eq 1 ]]; then
     exit 1
 fi
 
-
 while true; do
     case "$1" in
         --output_dir)
             output_dir="$2"
             shift 2
             ;;
-	--cpus)
+        --cpus)
             cpus="$2"
             shift 2
             ;;
         --image_name)
             image_name="$2"
             shift 2
+            ;;
+        --clean)
+            clean=true
+            shift
             ;;
         -h|--help)
             show_help
@@ -66,143 +81,162 @@ while true; do
     esac
 done
 
-# Check if script is executed from within github repository	
-
-if [ ! -d .git ]; then
-	show_help
-	exit 1
-elif [ ! -d plepiseq_bin ]; then
-	# in case user executes it from some other repository
-	show_help
-        exit 1
+# Sanity check: plepiseq_bin must be reachable (for download_profile_Campylo.py)
+if [ ! -d plepiseq_bin ]; then
+    echo "Error: plepiseq_bin/ not found. Run this script from the repository root."
+    show_help
+    exit 1
 fi
 
-
-## output path is provided
+## Validate required arguments
 if [[ -z "$output_dir" ]]; then
     echo "Error: --output_dir is required."
     show_help
     exit 1
 fi
 
-### Create output directory if does not exists, this directory will be mounted by docker
-output=$(realpath ${output_dir})
-if [ ! -d "${output}" ]; then
-    echo "Directory ${output} does not exist. Creating it..."
-    mkdir -p "${output}/Salmonella"
-    mkdir -p "${output}/Escherichia"
-    mkdir -p "${output}/Campylobacter"
-else
-    echo "Directory ${output} exists. Removing data from selected subidrecotries..."
-    rm -rf ${output}/Salmonella
-    rm -rf ${output}/Escherichia
-    rm -rf ${output}/Campylobacter
-
-    mkdir -p "${output}/Salmonella"
-    mkdir -p "${output}/Escherichia"
-    mkdir -p "${output}/Campylobacter"
-fi
-
-### Check if the user-provided path has write permissions
-if [ ! -w "$output" ]; then
-    echo "Current user does not have write permissions to the directory $output"
-    exit 1
-fi
-
-## image name is provided
 if [[ -z "$image_name" ]]; then
     echo "Error: --image_name is required."
     show_help
     exit 1
 fi
 
-## image_name has a default, hence we only check if image name  is a valid docker image
-tmp_name=`echo ${image_name} | cut -d ":" -f1`
-tmp_tag=`echo ${image_name} | cut -d ":" -f2`
+## Verify Docker image exists
+tmp_name=$(echo "${image_name}" | cut -d ":" -f1)
+tmp_tag=$(echo "${image_name}" | cut -d ":" -f2)
 
-if [ $(docker images | grep "${tmp_name}" | grep "${tmp_tag}" | wc -l) -ne 1 ]; then
-        echo "Provided docker image ${tmp_name}:${tmp_tag} does not exist. Provide valid image name"
-        exit 1
+if [ "$(docker images | grep "${tmp_name}" | grep "${tmp_tag}" | wc -l)" -ne 1 ]; then
+    echo "Provided docker image ${tmp_name}:${tmp_tag} does not exist. Provide valid image name"
+    exit 1
 fi
 
+## Verify gh CLI is available (needed for publishing releases)
+if ! command -v gh &>/dev/null; then
+    echo "Error: gh CLI not found. Install it from https://cli.github.com/"
+    exit 1
+fi
 
-# download profiles
+# ---------------------------------------------------------------------------
+# Prepare output directories
+# ---------------------------------------------------------------------------
+output=$(realpath "${output_dir}")
+
+for species in Salmonella Escherichia Campylobacter; do
+    if [ ! -d "${output}/${species}" ]; then
+        mkdir -p "${output}/${species}"
+    else
+        # Remove old profile downloads (new ones will be fetched below)
+        rm -f "${output}/${species}"/profiles.list*
+
+        if [ "$clean" = true ]; then
+            echo "--clean: removing cached distance matrices for ${species}"
+            rm -f "${output}/${species}"/dist0.npy
+            rm -f "${output}/${species}"/dist1.npy
+            rm -f "${output}/${species}"/ordering.npy
+        fi
+    fi
+done
+
+if [ ! -w "$output" ]; then
+    echo "Current user does not have write permissions to the directory $output"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Download profiles
+# ---------------------------------------------------------------------------
 wget -O "${output}/Salmonella/profiles.list.gz"  "https://enterobase.warwick.ac.uk//schemes/Salmonella.cgMLSTv2/profiles.list.gz"
 wget -O "${output}/Escherichia/profiles.list.gz" "https://enterobase.warwick.ac.uk//schemes/Escherichia.cgMLSTv1/profiles.list.gz"
 python3 plepiseq_bin/download_profile_Campylo.py
-mv profiles.list  "${output}/Campylobacter/"
+mv profiles.list "${output}/Campylobacter/"
 
-# Update timestamp
-# timestamp should be the day when profiles were downoloaded
-date '+%D' > "plepiseq_data/timestamp"
+TIMESTAMP=$(date +%Y-%m-%d)
 
-echo "Running clustering for Campylobacter ~15 min on 250 CPUs"
+# ---------------------------------------------------------------------------
+# Build the --clean flag string for docker commands
+# ---------------------------------------------------------------------------
+clean_flag=""
+if [ "$clean" = true ]; then
+    clean_flag="--clean"
+fi
+
+# ---------------------------------------------------------------------------
+# Clustering
+# ---------------------------------------------------------------------------
+
+echo "Running clustering for Campylobacter on ${cpus} CPUs"
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
-       --user $(id -u):$(id -g) \
+       --user "$(id -u):$(id -g)" \
        --ulimit nofile=262144:262144 \
-       ${image_name} --profile "/dane/profiles.list" -n ${cpus} --clustering_method single
+       ${image_name} --profile "/dane/profiles.list" -n ${cpus} \
+       --clustering_method single ${clean_flag}
 
 docker run --rm \
        --volume "${output}/Campylobacter/:/dane:rw" \
-       --user $(id -u):$(id -g) \
+       --user "$(id -u):$(id -g)" \
        --ulimit nofile=262144:262144 \
-       ${image_name} --profile "/dane/profiles.list" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
-
+       ${image_name} --profile "/dane/profiles.list" \
+       --profile_distance0 "/dane/dist0.npy" \
+       --profile_distance1 "/dane/dist1.npy" \
+       -n 1 --clustering_method complete
 echo "Finished calculations for Campylobacter"
 
 
-echo "Running clustering for Ecoli ~6 h on 250 CPUs"
+echo "Running clustering for Ecoli on ${cpus} CPUs"
 docker run --rm \
        --volume "${output}/Escherichia/:/dane:rw" \
-       --user $(id -u):$(id -g) \
+       --user "$(id -u):$(id -g)" \
        --ulimit nofile=262144:262144 \
-       ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} --clustering_method single
+       ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} \
+       --clustering_method single ${clean_flag}
 
 docker run --rm \
        --volume "${output}/Escherichia/:/dane:rw" \
-       --user $(id -u):$(id -g) \
+       --user "$(id -u):$(id -g)" \
        --ulimit nofile=262144:262144 \
-       ${image_name} --profile "/dane/profiles.list.gz" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
-
+       ${image_name} --profile "/dane/profiles.list.gz" \
+       --profile_distance0 "/dane/dist0.npy" \
+       --profile_distance1 "/dane/dist1.npy" \
+       -n 1 --clustering_method complete
 echo "Finished calculations for Ecoli"
 
-echo "Running clustering for Salmonella ~15 h on 250 CPUs"
-# calculate profiles /For salmonella even when using 250 cores  it will take ~16h)
+
+echo "Running clustering for Salmonella on ${cpus} CPUs"
 docker run --rm \
        --volume "${output}/Salmonella/:/dane:rw" \
-       --user $(id -u):$(id -g) \
+       --user "$(id -u):$(id -g)" \
        --ulimit nofile=262144:262144 \
-       ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} --clustering_method single
+       ${image_name} --profile "/dane/profiles.list.gz" -n ${cpus} \
+       --clustering_method single ${clean_flag}
 
 docker run --rm \
        --volume "${output}/Salmonella/:/dane:rw" \
-       --user $(id -u):$(id -g) \
+       --user "$(id -u):$(id -g)" \
        --ulimit nofile=262144:262144 \
-       ${image_name} --profile "/dane/profiles.list.gz" --profile_distance0 "/dane/dist0.npy" --profile_distance1 "/dane/dist1.npy" -n 1 --clustering_method complete
-
+       ${image_name} --profile "/dane/profiles.list.gz" \
+       --profile_distance0 "/dane/dist0.npy" \
+       --profile_distance1 "/dane/dist1.npy" \
+       -n 1 --clustering_method complete
 echo "Finished calculations for Salmonella"
 
-# moving results to plepiseq_data
-# updating repo
+# ---------------------------------------------------------------------------
+# Publish results as a GitHub Release
+# ---------------------------------------------------------------------------
+echo "Publishing results as GitHub Release v${TIMESTAMP}"
 
-if [ ! -d "plepiseq_data/Campylobacter" ]; then
-	mkdir -p "plepiseq_data/Campylobacter"
-fi
-cp  ${output}/Campylobacter/*HierCC* plepiseq_data/Campylobacter
+release_dir=$(mktemp -d)
 
+for species in Salmonella Escherichia Campylobacter; do
+    for f in "${output}/${species}"/*HierCC*; do
+        cp "$f" "${release_dir}/${species}_$(basename "$f")"
+    done
+done
 
-if [ ! -d "plepiseq_data/Salmonella" ]; then
-        mkdir -p "plepiseq_data/Salmonella"
-fi
-cp  ${output}/Salmonella/*HierCC* plepiseq_data/Salmonella
+gh release create "v${TIMESTAMP}" \
+    --title "Weekly clustering ${TIMESTAMP}" \
+    --notes "Profiles downloaded on ${TIMESTAMP}." \
+    "${release_dir}"/*
 
-if [ ! -d "plepiseq_data/Escherichia" ]; then
-        mkdir -p "plepiseq_data/Escherichia"
-fi
-cp  ${output}/Escherichia/*HierCC* plepiseq_data/Escherichia
-
-# Commiting new data to repo
-git add plepiseq_data/*
-git commit -m "Update on `date +%D`"
-git push
+rm -rf "${release_dir}"
+echo "Release v${TIMESTAMP} published successfully."
