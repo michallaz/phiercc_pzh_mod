@@ -23,26 +23,15 @@
 
 import sys, gzip, logging, click
 import pandas as pd, numpy as np
-from multiprocessing import Pool
 from scipy.cluster.hierarchy import linkage
 import os
 
 try :
-    from getDistance import getDistance
-    from getDistance import Getsquareform
-    from getDistance import dual_dist_single
-    from getDistance import ExpandSquareform
-    from getDistance import ExpandDistance
     from getDistance import GetSquareformParallel
     from getDistance import GetDistanceParallel
     from getDistance import ExpandSquareformParallel
     from getDistance import ExpandDistanceParallel
 except :
-    from .getDistance import getDistance
-    from .getDistance import Getsquareform
-    from .getDistance import dual_dist_single
-    from .getDistance import ExpandSquareform
-    from .getDistance import ExpandDistance
     from .getDistance import GetSquareformParallel
     from .getDistance import GetDistanceParallel
     from .getDistance import ExpandSquareformParallel
@@ -159,10 +148,7 @@ def _split_local(rows, row_names):
 @click.option('--clustering_method', help='[INPUT; optional] A linkage criterion for clustering '
                                           ' (Default: single).', default="single",
               type=click.Choice(['single', 'complete']))
-@click.option('--numba_parallel', is_flag=True, default=False,
-              help='Use Numba thread-parallel distance (no Pool/SharedArray). '
-                   'Lower RAM usage, uses TBB work-stealing for load balance.')
-def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_method, allowed_missing, numba_parallel):
+def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_method, allowed_missing):
     """
     pHierCC functions takes a file containing allelic profiles (as in https://pubmlst.org/data/), calculates
     distance between each profile (dual_dist function from getDistance) and performs
@@ -189,7 +175,6 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     # For numeric IDs names == mat.T[0]; for text IDs (e.g. "local_1")
     # mat.T[0] holds synthetic sequential integers while names keeps the
     # original strings.  We always use names for tracking between runs.
-    idx_to_name = {i: str(names[i]) for i in range(len(names))}
     matid_to_name = {int(mat[i, 0]): str(names[i]) for i in range(mat.shape[0])}
 
     # --- Decide: incremental or full mode ---
@@ -278,33 +263,17 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     if profile_distance0:
         logging.info('Reading user-provided distance matrix 0')
         dist = np.load(profile_distance0, allow_pickle=True)
-    elif numba_parallel and incremental:
-        logging.info('Expanding distance matrix 0 (numba parallel, incremental)')
+    elif incremental:
+        logging.info('Expanding distance matrix 0 (incremental)')
         dist = ExpandSquareformParallel(numpy_dist0_out, old_n, mat,
                                         n_proc, allowed_missing)
         logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
         np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
-    elif numba_parallel:
-        logging.info('Calculate distance matrix 0 (numba parallel)')
+    else:
+        logging.info('Calculate distance matrix 0 (full)')
         dist = GetSquareformParallel(mat, n_proc, allowed_missing)
         logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
         np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
-    elif incremental:
-        logging.info('Expanding distance matrix 0 (incremental)')
-        pool = Pool(n_proc)
-        dist = ExpandSquareform(numpy_dist0_out, old_n, mat, pool,
-                                output_dir, allowed_missing)
-        logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
-        np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
-        pool.close()
-    else:
-        logging.info('Calculate distance matrix 0 (full)')
-        pool = Pool(n_proc)
-        dist = Getsquareform(mat, 'dual_dist_squareform', pool,
-                             output_dir, start, allowed_missing)
-        logging.info(f'Saving distance matrix 0 to {numpy_dist0_out}')
-        np.save(numpy_dist0_out, dist, allow_pickle=True, fix_imports=True)
-        pool.close()
 
     # create object for an output matrix
     res = np.repeat(mat.T[0], int(mat.shape[1]) + 1).reshape(mat.shape[0], -1)
@@ -332,33 +301,17 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     if profile_distance1:
         logging.info('Reading user-provided distance matrix 1')
         dist = np.load(profile_distance1, allow_pickle=True, fix_imports=True)
-    elif numba_parallel and incremental and os.path.exists(numpy_dist1_out):
-        logging.info('Expanding distance matrix 1 (numba parallel, incremental)')
+    elif incremental and os.path.exists(numpy_dist1_out):
+        logging.info('Expanding distance matrix 1 (incremental)')
         dist = ExpandDistanceParallel(numpy_dist1_out, old_n, mat,
                                        n_proc, allowed_missing, depth=1)
         logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
         np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
-    elif numba_parallel:
-        logging.info('Calculate distance matrix 1 (numba parallel)')
+    else:
+        logging.info('Calculate distance matrix 1 (full)')
         dist = GetDistanceParallel(mat, n_proc, start, allowed_missing, depth=1)
         logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
         np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
-    elif incremental and os.path.exists(numpy_dist1_out):
-        logging.info('Expanding distance matrix 1 (incremental)')
-        pool = Pool(n_proc)
-        dist = ExpandDistance(numpy_dist1_out, old_n, mat, pool,
-                              output_dir, allowed_missing, depth=1)
-        logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
-        np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
-        pool.close()
-    else:
-        pool = Pool(n_proc)
-        logging.info('Calculate distance matrix 1 (full)')
-        dist = getDistance(mat, 'dual_dist', pool, output_dir,
-                           start, allowed_missing, depth=1)
-        logging.info(f'Saving distance matrix 1 to {numpy_dist1_out}')
-        np.save(numpy_dist1_out, dist, allow_pickle=True, fix_imports=True)
-        pool.close()
 
 
     logging.info('Attach genomes onto the tree.')
