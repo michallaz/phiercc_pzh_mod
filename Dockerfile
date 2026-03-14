@@ -6,7 +6,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 #continuumio/miniconda3
 
 RUN apt update && apt upgrade -y
-RUN apt install libopenblas-dev gfortran libboost-all-dev -y
+RUN apt install libopenblas-dev gfortran libboost-all-dev libtbb-dev -y
 
 # sciaganie scipy i podmienianie plikow z modulu cluster
 WORKDIR /opt
@@ -25,7 +25,8 @@ RUN python -m pip install --upgrade --force-reinstall --no-cache-dir \
 "doit==0.36.0" \
 "rich==13.9.4" \
 "pytest==8.3.4" \
-"pluggy==1.5.0"
+"pluggy==1.5.0" \
+"numpy==2.2.2" 
 
 RUN python dev.py build
 RUN cp -r build-install/lib/python3.11/site-packages/scipy/ /usr/local/lib/python3.11/
@@ -35,7 +36,7 @@ WORKDIR /opt
 RUN git clone https://gitlab.com/moon548834/shared-array.git
 WORKDIR /opt/shared-array
 RUN python setup.py install
-RUN pip install pandas numba
+RUN pip install pandas numba tbb
 RUN pip install --no-deps pHierCC
 COPY getDistance_github.py /usr/local/lib/python3.11/site-packages/pHierCC/getDistance.py
 COPY pHierCC_github.py /usr/local/lib/python3.11/site-packages/pHierCC/pHierCC.py

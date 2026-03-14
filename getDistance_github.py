@@ -429,6 +429,304 @@ def dual_dist_squareform_lessloop_optimized(mat, s, e, dlugosc_wektora, allowed_
 
 
 # ---------------------------------------------------------------------------
+# Branchless v2: eliminate branch misprediction in the inner k-loop
+# (benchmark showed no gain: LLVM already converts branches to cmov)
+# ---------------------------------------------------------------------------
+
+@nb.jit(nopython=True, fastmath=True, boundscheck=False)
+def _precompute_ql(mat):
+    """Count positive alleles per row (avoids np.sum(mat[i] > 0) temporaries)."""
+    n = mat.shape[0]
+    n_loci = mat.shape[1]
+    ql = np.empty(n, dtype=np.int32)
+    for i in range(n):
+        c = np.int32(0)
+        for k in range(n_loci):
+            c += np.int32(mat[i, k] > 0)
+        ql[i] = c
+    return ql
+
+
+@nb.jit(nopython=True, fastmath=True, boundscheck=False)
+def dual_dist_squareform_v2(mat, s, e, dlugosc_wektora, allowed_missing=0.05):
+    n = mat.shape[0]
+    n_loci = mat.shape[1]
+    allowed = allowed_missing * n_loci
+
+    ql_arr = _precompute_ql(mat)
+
+    dist = np.zeros(dlugosc_wektora, dtype=np.int16)
+    element = 0
+    for i in range(s, e):
+        qi = np.float64(ql_arr[i])
+        for j in range(i + 1, n):
+            al_int = np.int32(0)
+            ad_int = np.int32(0)
+            for k in range(n_loci):
+                vi = mat[i, k]
+                vj = mat[j, k]
+                both = np.int32(vi > 0) & np.int32(vj > 0)
+                al_int += both
+                ad_int += both & np.int32(vi != vj)
+
+            ad = np.float64(ad_int) + 1e-4
+            al = np.float64(al_int) + 1e-4
+            ll = max(qi, np.float64(ql_arr[j])) - allowed
+            if ll > al:
+                ad += ll - al
+                al = ll
+            dist[element] = np.int16(ad / al * n_loci + 0.5)
+            element += 1
+    return dist
+
+
+@nb.jit(nopython=True, fastmath=True, boundscheck=False)
+def dual_dist_v2(mat, s, e, allowed_missing=0.05, depth=0):
+    n = mat.shape[0]
+    n_loci = mat.shape[1]
+    allowed = allowed_missing * n_loci
+
+    ql_arr = _precompute_ql(mat)
+
+    dist = np.zeros((e - s, n, 1), dtype=np.int16)
+    for i in range(s, e):
+        qi = np.float64(ql_arr[i])
+        for j in range(i):
+            al_int = np.int32(0)
+            ad_int = np.int32(0)
+            for k in range(n_loci):
+                vi = mat[i, k]
+                vj = mat[j, k]
+                both = np.int32(vi > 0) & np.int32(vj > 0)
+                al_int += both
+                ad_int += both & np.int32(vi != vj)
+
+            ad = np.float64(ad_int) + 1e-4
+            al = np.float64(al_int) + 1e-4
+
+            if depth == 1:
+                ll2 = qi - allowed
+                if ll2 > al:
+                    ad += ll2 - al
+                    al = ll2
+                dist[i - s, j, 0] = np.int16(ad / al * n_loci + 0.5)
+
+            if depth == 0:
+                ll = max(qi, np.float64(ql_arr[j])) - allowed
+                if ll > al:
+                    ad += ll - al
+                    al = ll
+                dist[i - s, j, 0] = np.int16(ad / al * n_loci + 0.5)
+    return dist
+
+
+# ---------------------------------------------------------------------------
+# Numba-parallel approach: replace multiprocessing Pool + SharedArray with
+# Numba's built-in thread parallelism (prange).  Eliminates process fork,
+# shared-memory attachment, and serialisation overhead entirely.
+# ---------------------------------------------------------------------------
+
+@nb.jit(nopython=True, parallel=True, fastmath=True, boundscheck=False)
+def _squareform_numba_parallel(mat, allowed_missing=0.05):
+    n = mat.shape[0]
+    n_loci = mat.shape[1]
+    allowed = allowed_missing * n_loci
+
+    ql_arr = np.empty(n, dtype=np.int32)
+    for i in nb.prange(n):
+        c = np.int32(0)
+        for k in range(n_loci):
+            c += np.int32(mat[i, k] > 0)
+        ql_arr[i] = c
+
+    size = n * (n - 1) // 2
+    dist = np.zeros(size, dtype=np.int16)
+
+    for i in nb.prange(n):
+        qi = np.float64(ql_arr[i])
+        for j in range(i + 1, n):
+            al_int = np.int32(0)
+            ad_int = np.int32(0)
+            for k in range(n_loci):
+                vi = mat[i, k]
+                vj = mat[j, k]
+                both = np.int32(vi > 0) & np.int32(vj > 0)
+                al_int += both
+                ad_int += both & np.int32(vi != vj)
+
+            ad = np.float64(ad_int) + 1e-4
+            al = np.float64(al_int) + 1e-4
+            ll = max(qi, np.float64(ql_arr[j])) - allowed
+            if ll > al:
+                ad += ll - al
+                al = ll
+            pos = n * i - i * (i + 1) // 2 + (j - i - 1)
+            dist[pos] = np.int16(ad / al * n_loci + 0.5)
+
+    return dist
+
+
+@nb.jit(nopython=True, parallel=True, fastmath=True, boundscheck=False)
+def _dist1_numba_parallel(mat, start=0, allowed_missing=0.05, depth=0):
+    n = mat.shape[0]
+    n_loci = mat.shape[1]
+    allowed = allowed_missing * n_loci
+
+    ql_arr = np.empty(n, dtype=np.int32)
+    for i in nb.prange(n):
+        c = np.int32(0)
+        for k in range(n_loci):
+            c += np.int32(mat[i, k] > 0)
+        ql_arr[i] = c
+
+    dist = np.zeros((n - start, n, 1), dtype=np.int16)
+
+    for i in nb.prange(start, n):
+        qi = np.float64(ql_arr[i])
+        for j in range(i):
+            al_int = np.int32(0)
+            ad_int = np.int32(0)
+            for k in range(n_loci):
+                vi = mat[i, k]
+                vj = mat[j, k]
+                both = np.int32(vi > 0) & np.int32(vj > 0)
+                al_int += both
+                ad_int += both & np.int32(vi != vj)
+
+            ad = np.float64(ad_int) + 1e-4
+            al = np.float64(al_int) + 1e-4
+
+            if depth == 1:
+                ll2 = qi - allowed
+                if ll2 > al:
+                    ad += ll2 - al
+                    al = ll2
+                dist[i - start, j, 0] = np.int16(ad / al * n_loci + 0.5)
+
+            if depth == 0:
+                ll = max(qi, np.float64(ql_arr[j])) - allowed
+                if ll > al:
+                    ad += ll - al
+                    al = ll
+                dist[i - start, j, 0] = np.int16(ad / al * n_loci + 0.5)
+
+    return dist
+
+
+@nb.jit(nopython=True, parallel=True, fastmath=True, boundscheck=False)
+def _squareform_append_numba_parallel(mat, n_old, dist, allowed_missing=0.05):
+    """Compute only new-pair distances (prange), write into pre-allocated dist."""
+    n = mat.shape[0]
+    n_loci = mat.shape[1]
+    allowed = allowed_missing * n_loci
+
+    ql_arr = np.empty(n, dtype=np.int32)
+    for i in nb.prange(n):
+        c = np.int32(0)
+        for k in range(n_loci):
+            c += np.int32(mat[i, k] > 0)
+        ql_arr[i] = c
+
+    for i in nb.prange(n):
+        qi = np.float64(ql_arr[i])
+        j_start = n_old if i < n_old else i + 1
+        for j in range(j_start, n):
+            al_int = np.int32(0)
+            ad_int = np.int32(0)
+            for k in range(n_loci):
+                vi = mat[i, k]
+                vj = mat[j, k]
+                both = np.int32(vi > 0) & np.int32(vj > 0)
+                al_int += both
+                ad_int += both & np.int32(vi != vj)
+
+            ad = np.float64(ad_int) + 1e-4
+            al = np.float64(al_int) + 1e-4
+            ll = max(qi, np.float64(ql_arr[j])) - allowed
+            if ll > al:
+                ad += ll - al
+                al = ll
+            pos = n * i - i * (i + 1) // 2 + (j - i - 1)
+            dist[pos] = np.int16(ad / al * n_loci + 0.5)
+
+
+def GetSquareformParallel(data, n_threads, allowed_missing=0.0):
+    """Compute condensed distance using Numba parallel threading (no Pool)."""
+    nb.set_num_threads(n_threads)
+    logging.info(f'Numba parallel: using {nb.get_num_threads()} threads')
+
+    warmup = np.random.randint(0, 2, size=(4, 10)).astype(np.int32)
+    _squareform_numba_parallel(warmup, 0.05)
+
+    dist = _squareform_numba_parallel(data[:, 1:], allowed_missing)
+    return dist
+
+
+def GetDistanceParallel(data, n_threads, start=0, allowed_missing=0.0, depth=0):
+    """Compute full distance matrix using Numba parallel threading (no Pool)."""
+    nb.set_num_threads(n_threads)
+
+    warmup = np.random.randint(0, 2, size=(4, 10)).astype(np.int32)
+    _dist1_numba_parallel(warmup, 0, 0.05, depth)
+
+    dist = _dist1_numba_parallel(data[:, 1:], start, allowed_missing, depth)
+    return dist
+
+
+def ExpandSquareformParallel(old_dist_path, old_n, new_mat, n_threads,
+                              allowed_missing=0.0):
+    """Expand condensed distance vector using Numba parallel (no Pool/SharedArray)."""
+    nb.set_num_threads(n_threads)
+    n_new = new_mat.shape[0]
+    old_dist = np.load(old_dist_path, mmap_mode='r', allow_pickle=True)
+
+    new_size = int(n_new * (n_new - 1) / 2)
+    dist = np.zeros(new_size, dtype=np.int16)
+
+    logging.info(f'Copying old condensed distances ({old_n} STs) into new vector ({n_new} STs)')
+    for i in range(old_n):
+        old_start = old_n * i - i * (i + 1) // 2
+        new_start = n_new * i - i * (i + 1) // 2
+        length = old_n - 1 - i
+        if length > 0:
+            dist[new_start:new_start + length] = old_dist[old_start:old_start + length]
+    del old_dist
+
+    n_new_sts = n_new - old_n
+    total_new = old_n * n_new_sts + n_new_sts * (n_new_sts - 1) // 2
+    logging.info(f'Computing {total_new} new pairwise distances ({n_new_sts} new STs)')
+
+    warmup = np.random.randint(0, 2, size=(4, 10)).astype(np.int32)
+    warmup_d = np.zeros(int(4 * 3 / 2), dtype=np.int16)
+    _squareform_append_numba_parallel(warmup, 2, warmup_d, 0.05)
+
+    _squareform_append_numba_parallel(new_mat[:, 1:], old_n, dist, allowed_missing)
+    return dist
+
+
+def ExpandDistanceParallel(old_dist_path, old_n, new_mat, n_threads,
+                            allowed_missing=0.0, depth=0):
+    """Expand full distance matrix using Numba parallel (no Pool/SharedArray)."""
+    nb.set_num_threads(n_threads)
+    n_new = new_mat.shape[0]
+
+    warmup = np.random.randint(0, 2, size=(4, 10)).astype(np.int32)
+    _dist1_numba_parallel(warmup, 0, 0.05, depth)
+
+    new_rows = _dist1_numba_parallel(new_mat[:, 1:], old_n, allowed_missing, depth)
+
+    full_dist = np.zeros((n_new, n_new, 1), dtype=np.int16)
+    old_dist = np.load(old_dist_path, mmap_mode='r', allow_pickle=True)
+    full_dist[:old_n, :old_n, :] = old_dist[:, :, :]
+    del old_dist
+
+    full_dist[old_n:, :, :] = new_rows
+    del new_rows
+
+    return full_dist
+
+
+# ---------------------------------------------------------------------------
 # Incremental (append) mode: reuse old distances, compute only new ST pairs
 # ---------------------------------------------------------------------------
 
@@ -504,6 +802,79 @@ def _parallel_squareform_append(mat_buf, dist_buf, n, n_old, pool, output_dir,
 
     for _ in pool.imap_unordered(
         _dist_wrapper_squareform_append,
+        [[mat_buf, dist_buf, si, ei, n_old, n, allowed_missing]
+         for si, ei in indices]):
+        pass
+
+
+@nb.jit(nopython=True, fastmath=True, boundscheck=False)
+def _dual_dist_squareform_append_v2(mat, s, e, n_old, n, dist, allowed_missing=0.05):
+    """Branchless v2 of _dual_dist_squareform_append."""
+    n_loci = mat.shape[1]
+    allowed = allowed_missing * n_loci
+    ql_arr = _precompute_ql(mat)
+
+    for i in range(s, e):
+        qi = np.float64(ql_arr[i])
+        j_start = n_old if i < n_old else i + 1
+        for j in range(j_start, n):
+            al_int = np.int32(0)
+            ad_int = np.int32(0)
+            for k in range(n_loci):
+                vi = mat[i, k]
+                vj = mat[j, k]
+                both = np.int32(vi > 0) & np.int32(vj > 0)
+                al_int += both
+                ad_int += both & np.int32(vi != vj)
+
+            ad = np.float64(ad_int) + 1e-4
+            al = np.float64(al_int) + 1e-4
+            ll = max(qi, np.float64(ql_arr[j])) - allowed
+            if ll > al:
+                ad += ll - al
+                al = ll
+            pos = n * i - i * (i + 1) // 2 + (j - i - 1)
+            dist[pos] = np.int16(ad / al * n_loci + 0.5)
+
+
+def _dist_wrapper_squareform_append_v2(data):
+    mat_buf, dist_buf, s, e, n_old, n, allowed_missing = data
+    mat = sa.attach(mat_buf)
+    dist = sa.attach(dist_buf)
+    if e > s:
+        sample = np.random.randint(0, 2, size=(4, 10)).astype(np.int32)
+        sample_d = np.zeros(int(4 * 3 / 2), dtype=np.int16)
+        _dual_dist_squareform_append_v2(sample, 0, 2, 0, 4, sample_d, 0.05)
+        _dual_dist_squareform_append_v2(mat[:, 1:], s, e, n_old, n, dist, allowed_missing)
+    del mat, dist
+
+
+def _parallel_squareform_append_v2(mat_buf, dist_buf, n, n_old, pool, output_dir,
+                                   allowed_missing=0.05):
+    n_pool = len(pool._pool)
+
+    total_new_pairs = n_old * (n - n_old)
+    for i in range(n_old, n):
+        total_new_pairs += n - 1 - i
+    target = total_new_pairs / n_pool
+
+    indices = []
+    s = 0
+    cumulative = 0
+    for i in range(n):
+        cumulative += (n - n_old) if i < n_old else (n - 1 - i)
+        if cumulative >= target and len(indices) < n_pool - 1:
+            indices.append([s, i + 1])
+            s = i + 1
+            cumulative = 0
+    indices.append([s, n])
+
+    with open(f'{output_dir}/macierz_indeksy_append.txt', 'w') as f:
+        for si, ei in indices:
+            f.write(f'Append mode (v2): rows {si} to {ei}\n')
+
+    for _ in pool.imap_unordered(
+        _dist_wrapper_squareform_append_v2,
         [[mat_buf, dist_buf, si, ei, n_old, n, allowed_missing]
          for si, ei in indices]):
         pass
