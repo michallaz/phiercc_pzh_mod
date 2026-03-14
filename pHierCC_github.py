@@ -148,7 +148,10 @@ def _split_local(rows, row_names):
 @click.option('--clustering_method', help='[INPUT; optional] A linkage criterion for clustering '
                                           ' (Default: single).', default="single",
               type=click.Choice(['single', 'complete']))
-def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_method, allowed_missing):
+@click.option('--clean', is_flag=True, default=False,
+              help='Force full recalculation from scratch, removing any previous '
+                   'run artefacts (dist0.npy, dist1.npy, ordering.npy).')
+def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_method, allowed_missing, clean):
     """
     pHierCC functions takes a file containing allelic profiles (as in https://pubmlst.org/data/), calculates
     distance between each profile (dual_dist function from getDistance) and performs
@@ -166,6 +169,12 @@ def phierCC(profile, profile_distance0, profile_distance1, n_proc, clustering_me
     numpy_dist0_out = f'{output_dir}/dist0.npy'
     numpy_dist1_out = f'{output_dir}/dist1.npy'
     ordering_path = f'{output_dir}/ordering.npy'
+
+    if clean:
+        for f in (numpy_dist0_out, numpy_dist1_out, ordering_path):
+            if os.path.exists(f):
+                os.remove(f)
+                logging.info(f'--clean: removed {f}')
 
     # Read profiles file
     mat, names = prepare_mat(profile_file)
