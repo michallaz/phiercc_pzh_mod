@@ -1,6 +1,12 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.2.3] - 2026-03-15
+### Changed
+- Moved core scripts to `src/` and dropped the `_github` suffix (`pHierCC_github.py` → `src/pHierCC.py`, `getDistance_github.py` → `src/getDistance.py`).
+- Moved utility scripts to `tools/` (`compare_hiercc.py`, `test_incremental.py`).
+- Updated Dockerfile `COPY` paths and README repository structure accordingly.
+
 ## [0.2.2] - 2026-03-15
 ### Changed
 - Renamed `cluster/` to `scipy_patches/`, keeping only the two modified files (`hierarchy.py`, `_hierarchy.pyx`); removed 13 unmodified SciPy files.
