@@ -180,7 +180,7 @@ Releases follow the naming convention `vYYYY.MM.DD`, corresponding to the date w
 ├── Dockerfile                      # Docker image build (custom SciPy + Numba + TBB)
 ├── pHierCC_github.py               # Main clustering script (CLI entrypoint)
 ├── getDistance_github.py            # Numba parallel distance computation kernels
-├── cluster/                        # Modified SciPy cluster module (int16 support)
+├── scipy_patches/                  # Modified SciPy cluster module (int16 support)
 │   ├── hierarchy.py
 │   └── _hierarchy.pyx
 ├── plepiseq_bin/
