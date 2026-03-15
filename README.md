@@ -178,17 +178,19 @@ Releases follow the naming convention `vYYYY.MM.DD`, corresponding to the date w
 
 ```
 ├── Dockerfile                      # Docker image build (custom SciPy + Numba + TBB)
-├── pHierCC_github.py               # Main clustering script (CLI entrypoint)
-├── getDistance_github.py            # Numba parallel distance computation kernels
+├── src/
+│   ├── pHierCC.py                  # Main clustering script (CLI entrypoint)
+│   └── getDistance.py              # Numba parallel distance computation kernels
 ├── scipy_patches/                  # Modified SciPy cluster module (int16 support)
 │   ├── hierarchy.py
 │   └── _hierarchy.pyx
 ├── plepiseq_bin/
 │   ├── run_clustering.sh           # Weekly automation wrapper (3 species)
 │   └── download_profile_Campylo.py # Campylobacter profile downloader
+├── tools/
+│   ├── compare_hiercc.py           # Compare two HierCC output files
+│   └── test_incremental.py         # Incremental mode verification tests
 ├── test_data/                      # Small test profiles (9 and 19 STs)
-├── compare_hiercc.py               # Compare two HierCC output files
-├── test_incremental.py             # Incremental mode verification tests
 ├── VERSION
 ├── CHANGELOG.md
 └── LICENSE                         # GPL-3.0
