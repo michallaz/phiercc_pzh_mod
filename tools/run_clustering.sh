@@ -147,8 +147,7 @@ fi
 # ---------------------------------------------------------------------------
 wget -O "${output}/Salmonella/profiles.list.gz"  "https://enterobase.warwick.ac.uk//schemes/Salmonella.cgMLSTv2/profiles.list.gz"
 wget -O "${output}/Escherichia/profiles.list.gz" "https://enterobase.warwick.ac.uk//schemes/Escherichia.cgMLSTv1/profiles.list.gz"
-python3 tools/download_profile_Campylo.py
-mv profiles.list "${output}/Campylobacter/"
+python3 tools/download_profile_Campylo.py -o "${output}/Campylobacter/profiles.list"
 
 TIMESTAMP=$(date +%Y-%m-%d)
 
