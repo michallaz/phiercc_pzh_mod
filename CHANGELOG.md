@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2026-03-15
+### Changed
+- Renamed `cluster/` to `scipy_patches/`, keeping only the two modified files (`hierarchy.py`, `_hierarchy.pyx`); removed 13 unmodified SciPy files.
+- Updated Dockerfile `COPY` paths accordingly.
+
 ## [0.2.1] - 2026-03-15
 ### Changed
 - Replaced plaintext `README` with comprehensive `README.md` following plepiseq project conventions (features, quick start, CLI reference, repository structure, related projects, citation, license).
