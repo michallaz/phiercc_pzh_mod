@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-03-15
+### Changed
+- Replaced plaintext `README` with comprehensive `README.md` following plepiseq project conventions (features, quick start, CLI reference, repository structure, related projects, citation, license).
+
 ## [0.2.0] - 2026-03-14
 ### Changed
 - Rewritten `plepiseq_bin/run_clustering.sh` to support incremental distance matrix computation by preserving `.npy` artefacts between weekly runs.
