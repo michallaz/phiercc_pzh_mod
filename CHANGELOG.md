@@ -18,7 +18,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.0] - 2026-03-14
 ### Changed
-- Rewritten `plepiseq_bin/run_clustering.sh` to support incremental distance matrix computation by preserving `.npy` artefacts between weekly runs.
+- Rewritten `tools/run_clustering.sh` (formerly `plepiseq_bin/run_clustering.sh`) to support incremental distance matrix computation by preserving `.npy` artefacts between weekly runs.
 - Added `--clean` flag to the wrapper script, passed through to pHierCC to force full recalculation.
 - Replaced `git add/commit/push` of clustering results with `gh release create`, publishing output files as GitHub Release assets instead of committing binary data to the repository.
 - Removed `plepiseq_data/` from git tracking and purged historical binary blobs (reduced repository size from ~2 GiB to ~120 KiB).
@@ -34,4 +34,4 @@ All notable changes to this project will be documented in this file.
 - Support for mixed numeric and text-based ST identifiers (e.g. public + `local_` profiles), with local STs always sorted to the bottom of the distance matrix.
 - `--clean` flag to force full recalculation even when previous run artefacts exist.
 - Dockerized build with custom SciPy compilation for `int16` clustering support.
-- Weekly clustering wrapper script (`plepiseq_bin/run_clustering.sh`) for Salmonella, Escherichia, and Campylobacter.
+- Weekly clustering wrapper script (`tools/run_clustering.sh`) for Salmonella, Escherichia, and Campylobacter.

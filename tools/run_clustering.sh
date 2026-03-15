@@ -19,7 +19,7 @@ set -euo pipefail
 ###
 ### Script will crash if machine has less than 600 Gb of RAM
 ### Example:
-### ./plepiseq_bin/run_clustering.sh --output_dir /mnt/raid/michall/pHierCC \
+### ./tools/run_clustering.sh --output_dir /mnt/raid/michall/pHierCC \
 ###     --image_name "phiercc_custom:2.0" --cpus 250
 
 output_dir=""
@@ -81,9 +81,9 @@ while true; do
     esac
 done
 
-# Sanity check: plepiseq_bin must be reachable (for download_profile_Campylo.py)
-if [ ! -d plepiseq_bin ]; then
-    echo "Error: plepiseq_bin/ not found. Run this script from the repository root."
+# Sanity check: tools/ must be reachable (for download_profile_Campylo.py)
+if [ ! -d tools ]; then
+    echo "Error: tools/ not found. Run this script from the repository root."
     show_help
     exit 1
 fi
@@ -147,7 +147,7 @@ fi
 # ---------------------------------------------------------------------------
 wget -O "${output}/Salmonella/profiles.list.gz"  "https://enterobase.warwick.ac.uk//schemes/Salmonella.cgMLSTv2/profiles.list.gz"
 wget -O "${output}/Escherichia/profiles.list.gz" "https://enterobase.warwick.ac.uk//schemes/Escherichia.cgMLSTv1/profiles.list.gz"
-python3 plepiseq_bin/download_profile_Campylo.py
+python3 tools/download_profile_Campylo.py
 mv profiles.list "${output}/Campylobacter/"
 
 TIMESTAMP=$(date +%Y-%m-%d)
