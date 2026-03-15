@@ -1,6 +1,12 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.2.4] - 2026-03-15
+### Changed
+- Merged `plepiseq_bin/` into `tools/`; all scripts now live under a single directory.
+- `download_profile_Campylo.py` now accepts `-o`/`--output` to write directly to the target path; removed `mv` workaround in `run_clustering.sh`.
+- Added HTTP error handling and missing-scheme check to `download_profile_Campylo.py`.
+
 ## [0.2.3] - 2026-03-15
 ### Changed
 - Moved core scripts to `src/` and dropped the `_github` suffix (`pHierCC_github.py` → `src/pHierCC.py`, `getDistance_github.py` → `src/getDistance.py`).
